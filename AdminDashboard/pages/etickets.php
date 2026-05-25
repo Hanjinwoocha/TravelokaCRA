@@ -4,51 +4,49 @@ $pageTitle  = 'E-tickets';
 $activePage = 'etickets';
 $msg = '';
 
-// Update ticket status
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'update') {
-  $pdo->prepare("UPDATE eticket SET tick_status=? WHERE tick_id=?")
-    ->execute([trim($_POST['tick_status']), intval($_POST['tick_id'])]);
-  $msg = 'success:Ticket status updated.';
-}
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action    = $_POST['action']     ?? '';
+    $bookingId = trim($_POST['booking_id'] ?? '');
 
-// Delete ticket
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'delete') {
-  $pdo->prepare("DELETE FROM eticket WHERE tick_id=?")->execute([intval($_POST['tick_id'])]);
-  $msg = 'success:Ticket deleted.';
+    if ($action === 'flag' && $bookingId) {
+        $flagReason = trim($_POST['flag_reason'] ?? 'This order has been flagged for review by an administrator.');
+        fb()->updateDoc('bookings', $bookingId, [
+            'isFlagged'  => true,
+            'flagReason' => $flagReason,
+        ]);
+        $msg = 'success:Ticket flagged successfully.';
+    }
+
+    if ($action === 'unflag' && $bookingId) {
+        fb()->updateDoc('bookings', $bookingId, [
+            'isFlagged'  => false,
+            'flagReason' => '',
+        ]);
+        $msg = 'success:Flag removed from ticket.';
+    }
 }
 
 $status_filter = $_GET['status'] ?? '';
 $search        = trim($_GET['q'] ?? '');
 
-try {
-  $where  = [];
-  $params = [];
-  if ($status_filter) { $where[] = 'et.tick_status = ?'; $params[] = $status_filter; }
-  if ($search) {
-    $where[] = '(CONCAT(cu.cust_firstname," ",cu.cust_lastname) LIKE ? OR et.tick_qrcode LIKE ?)';
-    $params[] = "%$search%"; $params[] = "%$search%";
-  }
-  $wc = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+$filterMap = ['Pending' => 'Upcoming', 'Active' => 'Ongoing', 'Completed' => 'Completed', 'Cancelled' => 'Cancelled'];
+$filters   = [];
+if ($status_filter && isset($filterMap[$status_filter])) {
+    $filters[] = ['field' => 'bookingStatus', 'op' => 'EQUAL', 'value' => $filterMap[$status_filter]];
+}
+// Only fetch bookings that have a qrCode (i.e. paid)
+$allBookings = fb()->query('bookings', $filters);
+usort($allBookings, fn($a, $b) => intval($b['createdAt'] ?? 0) <=> intval($a['createdAt'] ?? 0));
+$tickets     = array_values(array_filter($allBookings, fn($b) => !empty($b['qrCode'])));
 
-  $stmt = $pdo->prepare("
-    SELECT et.*,
-           p.pay_amount, p.pay_method,
-           ro.rent_id, ro.rent_dateissued, ro.rent_datedue,
-           ro.rent_pickuplocation, ro.rent_dropofflocation,
-           CONCAT(cu.cust_firstname,' ',cu.cust_lastname) AS customer_name,
-           cu.cust_email,
-           ca.car_model, ca.car_type
-    FROM eticket et
-    JOIN payment p      ON p.pay_id     = et.tick_payid
-    JOIN rental_order ro ON ro.rent_id  = p.pay_rentid
-    JOIN customer cu    ON cu.cust_id   = ro.rent_custid
-    JOIN car ca         ON ca.car_id    = ro.rent_carid
-    $wc
-    ORDER BY et.tick_id DESC
-  ");
-  $stmt->execute($params);
-  $tickets = $stmt->fetchAll();
-} catch (Exception $e) { $tickets = []; }
+if ($search) {
+    $sq = strtolower($search);
+    $tickets = array_values(array_filter($tickets, fn($b) =>
+        str_contains(strtolower($b['renterName']  ?? ''), $sq) ||
+        str_contains(strtolower($b['vehicleName'] ?? ''), $sq) ||
+        str_contains(strtolower($b['qrCode']      ?? ''), $sq)
+    ));
+}
 
 include __DIR__ . '/../includes/header.php';
 ?>
@@ -60,11 +58,17 @@ include __DIR__ . '/../includes/header.php';
   </div>
 </div>
 
+<?php if ($msg): [$type,$text] = explode(':', $msg, 2); ?>
+<div class="alert-tv <?= $type === 'success' ? 'success' : 'error' ?>" style="margin-bottom:20px">
+  <i class="bi bi-check-circle-fill"></i><?= htmlspecialchars($text) ?>
+</div>
+<?php endif; ?>
+
 <div class="content-card">
   <div class="card-header-tv" style="flex-wrap:wrap;gap:10px">
     <h2 class="card-title-tv">All e-tickets</h2>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <?php foreach ([''=>'All','Pending'=>'Pending','Active'=>'Active','Completed'=>'Completed','Cancelled'=>'Cancelled'] as $val=>$label): ?>
+      <?php foreach ([''=>'All','Pending'=>'Upcoming','Active'=>'Ongoing','Completed'=>'Completed','Cancelled'=>'Cancelled'] as $val=>$label): ?>
         <a href="?status=<?= urlencode($val) ?>&q=<?= urlencode($search) ?>"
            style="padding:4px 14px;border-radius:99px;font-size:12px;font-weight:600;text-decoration:none;
                   <?= $status_filter===$val ? 'background:var(--tv-blue);color:#fff' : 'background:#F0F3F8;color:var(--text-secondary)' ?>">
@@ -80,79 +84,65 @@ include __DIR__ . '/../includes/header.php';
   </div>
 
   <?php if (empty($tickets)): ?>
-    <div class="empty-state">
-      <i class="bi bi-ticket-perforated d-block"></i>
-      <p>No e-tickets found.</p>
-    </div>
+    <div class="empty-state"><i class="bi bi-ticket-perforated d-block"></i><p>No e-tickets found.</p></div>
   <?php else: ?>
   <div class="table-responsive">
     <table class="tv-table">
       <thead>
-        <tr>
-          <th>Ticket ID</th>
-          <th>Customer</th>
-          <th>Vehicle</th>
-          <th>Order #</th>
-          <th>Rental period</th>
-          <th>Amount</th>
-          <th>Date issued</th>
-          <th>Status</th>
-          <th>Actions</th>
-        </tr>
+        <tr><th>Booking</th><th>Customer</th><th>Vehicle</th><th>Rental period</th><th>Amount</th><th>Status</th><th>Actions</th></tr>
       </thead>
       <tbody>
-        <?php foreach ($tickets as $t): ?>
+        <?php foreach ($tickets as $t):
+          $status   = $t['bookingStatus'] ?? 'Upcoming';
+          $badgeCls = Firebase::statusBadge($status);
+          $start    = Firebase::msToDate($t['startDateMs'] ?? 0);
+          $end      = Firebase::msToDate($t['endDateMs']   ?? 0);
+          $shortId  = substr($t['id'], 0, 8);
+        ?>
         <tr>
           <td>
-            <strong style="color:var(--tv-blue)">#<?= $t['tick_id'] ?></strong><br>
-            <span style="font-size:11px;color:var(--text-muted);font-family:monospace"><?= htmlspecialchars(substr($t['tick_qrcode'],0,20)) ?>…</span>
+            <strong style="color:var(--tv-blue);font-family:monospace;font-size:12px"><?= htmlspecialchars($shortId) ?>…</strong><br>
+            <span style="font-size:11px;color:var(--text-muted);font-family:monospace"><?= htmlspecialchars(substr($t['qrCode'] ?? '',0,20)) ?>…</span>
           </td>
           <td>
-            <strong><?= htmlspecialchars($t['customer_name']) ?></strong><br>
-            <span style="font-size:12px;color:var(--text-secondary)"><?= htmlspecialchars($t['cust_email']) ?></span>
+            <strong><?= htmlspecialchars($t['renterName'] ?? '—') ?></strong><br>
+            <span style="font-size:12px;color:var(--text-secondary)"><?= htmlspecialchars($t['renterEmail'] ?? '') ?></span>
           </td>
           <td>
-            <?= htmlspecialchars($t['car_model']) ?><br>
-            <span class="badge-tv badge-complete" style="margin-top:2px"><?= htmlspecialchars($t['car_type']) ?></span>
+            <?= htmlspecialchars($t['vehicleName'] ?? '—') ?><br>
+            <span style="font-size:12px;color:var(--text-secondary)"><?= htmlspecialchars($t['vendorName'] ?? '') ?></span>
           </td>
           <td>
-            <a href="/Traveloka/AdminDashboard/pages/rentals.php" style="color:var(--tv-blue);text-decoration:none;font-weight:600">
-              #<?= $t['rent_id'] ?>
-            </a>
+            <span style="font-size:12.5px"><?= htmlspecialchars($start) ?></span><br>
+            <span style="font-size:12px;color:var(--text-secondary)">→ <?= htmlspecialchars($end) ?></span>
           </td>
           <td>
-            <span style="font-size:12.5px"><?= htmlspecialchars($t['rent_dateissued']) ?></span><br>
-            <span style="font-size:12px;color:var(--text-secondary)">→ <?= htmlspecialchars($t['rent_datedue']) ?></span>
+            <strong>₱<?= number_format(floatval($t['totalPrice'] ?? 0), 2) ?></strong><br>
+            <span style="font-size:12px;color:var(--text-secondary)"><?= htmlspecialchars($t['paymentMethod'] ?? '') ?></span>
           </td>
-          <td><strong>₱<?= number_format($t['pay_amount'], 2) ?></strong><br>
-            <span style="font-size:12px;color:var(--text-secondary)"><?= htmlspecialchars($t['pay_method']) ?></span>
-          </td>
-          <td><?= htmlspecialchars($t['tick_dateissued']) ?></td>
           <td>
-            <?php
-              $st  = $t['tick_status'];
-              $cls = match($st) {
-                'Active'    => 'badge-active',
-                'Completed' => 'badge-complete',
-                'Cancelled' => 'badge-cancel',
-                default     => 'badge-pending',
-              };
-            ?>
-            <span class="badge-tv <?= $cls ?>"><?= htmlspecialchars($st) ?></span>
+            <span class="badge-tv <?= $badgeCls ?>"><?= htmlspecialchars(Firebase::statusLabel($status)) ?></span>
+            <?php if (!empty($t['isFlagged'])): ?>
+              <span class="badge-tv" style="background:#FEF3C7;color:#92400E;border-color:#FDE68A;margin-top:4px;display:inline-flex">
+                <i class="bi bi-flag-fill" style="margin-right:3px"></i>Flagged
+              </span>
+            <?php endif; ?>
           </td>
-          <td style="display:flex;gap:6px">
-            <button class="btn-icon" title="Update status"
-              onclick='openEdit(<?= json_encode(["tick_id"=>$t["tick_id"],"tick_status"=>$t["tick_status"]]) ?>)'>
-              <i class="bi bi-pencil"></i>
-            </button>
-            <form id="del_tick_<?= $t['tick_id'] ?>" method="post" style="display:none">
-              <input type="hidden" name="action"   value="delete">
-              <input type="hidden" name="tick_id"  value="<?= $t['tick_id'] ?>">
-            </form>
-            <button class="btn-icon danger" title="Delete"
-              onclick='confirmDelete("e-ticket","del_tick_<?= $t['tick_id'] ?>",<?= json_encode('#'.$t['tick_id'].' — '.$t['customer_name'], JSON_HEX_APOS) ?>)'>
-              <i class="bi bi-trash3"></i>
-            </button>
+          <td>
+            <?php if (empty($t['isFlagged'])): ?>
+              <button class="btn-icon" title="Flag ticket"
+                onclick='openFlag(<?= json_encode(["booking_id"=>$t["id"],"shortId"=>$shortId]) ?>)'>
+                <i class="bi bi-flag"></i>
+              </button>
+            <?php else: ?>
+              <form method="post" style="display:contents">
+                <input type="hidden" name="action"     value="unflag">
+                <input type="hidden" name="booking_id" value="<?= htmlspecialchars($t['id']) ?>">
+                <button type="submit" class="btn-icon" title="Remove flag" style="color:#92400E;border-color:#FDE68A">
+                  <i class="bi bi-flag-fill"></i>
+                </button>
+              </form>
+            <?php endif; ?>
           </td>
         </tr>
         <?php endforeach; ?>
@@ -162,38 +152,39 @@ include __DIR__ . '/../includes/header.php';
   <?php endif; ?>
 </div>
 
-<!-- Edit status modal -->
-<div class="modal fade" id="editModal" tabindex="-1">
+
+<!-- Flag ticket modal -->
+<div class="modal fade" id="flagModal" tabindex="-1">
   <div class="modal-dialog modal-dialog-centered modal-sm">
     <form method="post" class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title">Update ticket status</h5>
+        <h5 class="modal-title"><i class="bi bi-flag-fill" style="color:#D97706;margin-right:6px"></i>Flag ticket</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
-        <input type="hidden" name="action"   value="update">
-        <input type="hidden" name="tick_id"  id="fm_id" value="">
-        <label class="form-label-tv">Status</label>
-        <select name="tick_status" id="fm_status" class="tv-select">
-          <option>Pending</option>
-          <option>Active</option>
-          <option>Completed</option>
-          <option>Cancelled</option>
-        </select>
+        <input type="hidden" name="action"     value="flag">
+        <input type="hidden" name="booking_id" id="fm_booking_id" value="">
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+          Flagging ticket <strong id="fm_short_id"></strong> will mark it for review. The customer will see a notice on their ticket.
+        </p>
+        <label class="form-label-tv">Reason *</label>
+        <textarea name="flag_reason" id="fm_flag_reason" class="tv-input" rows="3" maxlength="300" required
+          placeholder="e.g. Identity verification required…" style="resize:vertical;height:auto;padding:8px 12px"></textarea>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn-tv-ghost" data-bs-dismiss="modal">Cancel</button>
-        <button type="submit" class="btn-tv-primary"><i class="bi bi-check-lg"></i> Save</button>
+        <button type="submit" class="btn-tv-primary" style="background:#D97706;border-color:#D97706"><i class="bi bi-flag-fill"></i> Flag ticket</button>
       </div>
     </form>
   </div>
 </div>
 
 <script>
-function openEdit(t) {
-  document.getElementById('fm_id').value     = t.tick_id;
-  document.getElementById('fm_status').value = t.tick_status;
-  new bootstrap.Modal(document.getElementById('editModal')).show();
+function openFlag(data) {
+  document.getElementById('fm_booking_id').value = data.booking_id;
+  document.getElementById('fm_short_id').textContent = data.shortId + '…';
+  document.getElementById('fm_flag_reason').value = '';
+  new bootstrap.Modal(document.getElementById('flagModal')).show();
 }
 </script>
 

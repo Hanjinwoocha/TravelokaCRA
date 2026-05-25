@@ -273,7 +273,6 @@ if (!empty($_SESSION['customer_logged_in'])) { header('Location: /Traveloka/Cust
         <li class="nav-item"><a href="#how"         class="nav-link-tv">How It Works</a></li>
         <li class="nav-item"><a href="#providers"   class="nav-link-tv">Providers</a></li>
         <li class="nav-item"><a href="#reviews"     class="nav-link-tv">Reviews</a></li>
-        <li class="nav-item"><a href="/Traveloka/auth/signin.php" class="nav-link-tv">Sign In</a></li>
       </ul>
       <div class="d-flex gap-2 align-items-center mt-3 mt-lg-0">
         <a href="/Traveloka/auth/signin.php" class="btn-nav-signin">
@@ -481,9 +480,7 @@ if (!empty($_SESSION['customer_logged_in'])) { header('Location: /Traveloka/Cust
           <a href="/Traveloka/auth/provider_register.php" class="btn-cta-w">
             <i class="bi bi-building-add"></i> Apply as provider
           </a>
-          <a href="/Traveloka/auth/signin.php" class="btn-cta-o">
-            <i class="bi bi-box-arrow-in-right"></i> Provider login
-          </a>
+
         </div>
       </div>
       <div class="col-lg-7">
@@ -622,7 +619,7 @@ if (!empty($_SESSION['customer_logged_in'])) { header('Location: /Traveloka/Cust
       <div class="col-lg-2 col-md-6 col-6">
         <div class="ft-title">Providers</div>
         <a href="/Traveloka/auth/provider_register.php" class="ft-link">Apply now</a>
-        <a href="/Traveloka/auth/signin.php" class="ft-link">Provider login</a>
+
         <a href="#providers" class="ft-link">Features</a>
       </div>
       <div class="col-lg-2 col-md-6 col-6">

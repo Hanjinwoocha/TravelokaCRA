@@ -4,52 +4,41 @@ $pageTitle  = 'Dashboard';
 $activePage = 'dashboard';
 
 // ── Summary counts ────────────────────────────────────────────────────────────
-$counts = [];
-foreach ([
-  'providers' => 'SELECT COUNT(*) FROM car_provider',
-  'cars'       => 'SELECT COUNT(*) FROM car',
-  'customers'  => 'SELECT COUNT(*) FROM customer',
-  'drivers'    => 'SELECT COUNT(*) FROM driver_details',
-  'rentals'    => 'SELECT COUNT(*) FROM rental_order',
-  'payments'   => 'SELECT COUNT(*) FROM payment',
-  'tickets'    => 'SELECT COUNT(*) FROM eticket',
-  'active'     => "SELECT COUNT(*) FROM eticket WHERE tick_status = 'Active'",
-  'pending_providers' => "SELECT COUNT(*) FROM car_provider WHERE prov_status = 'pending'",
-] as $key => $sql) {
-  try { $counts[$key] = $pdo->query($sql)->fetchColumn(); }
-  catch (Exception $e) { $counts[$key] = 0; }
+$allVendors   = fb()->query('vendors',   []);
+$allVehicles  = fb()->query('vehicles',  []);
+$allUsers     = fb()->query('users',     [['field' => 'role', 'op' => 'EQUAL', 'value' => 'customer']]);
+$allDrivers   = fb()->query('drivers',   []);
+$allBookings  = fb()->query('bookings',  []);
+
+$counts = [
+    'providers'         => count($allVendors),
+    'cars'              => count($allVehicles),
+    'customers'         => count($allUsers),
+    'drivers'           => count($allDrivers),
+    'rentals'           => count($allBookings),
+    'payments'          => count(array_filter($allBookings, fn($b) => !empty($b['qrCode']))),
+    'tickets'           => count(array_filter($allBookings, fn($b) => !empty($b['qrCode']))),
+    'active'            => count(array_filter($allBookings, fn($b) => ($b['bookingStatus'] ?? '') === 'Ongoing')),
+    'pending_providers' => count(array_filter($allVendors,  fn($v) => ($v['status'] ?? '') === 'pending')),
+];
+
+// ── Recent bookings (last 8, paid) ───────────────────────────────────────────
+$recentOrders = array_slice(
+    array_filter($allBookings, fn($b) => !empty($b['qrCode'])),
+    0, 8
+);
+
+// ── Monthly chart (last 6 months) ────────────────────────────────────────────
+$chartMap = [];
+$sixMonthsAgo = strtotime('-6 months') * 1000;
+foreach ($allBookings as $b) {
+    $ms = intval($b['startDateMs'] ?? 0);
+    if ($ms < $sixMonthsAgo) continue;
+    $month = date('M', intdiv($ms, 1000));
+    $chartMap[$month] = ($chartMap[$month] ?? 0) + 1;
 }
-
-// ── Recent rental orders ──────────────────────────────────────────────────────
-try {
-  $recentOrders = $pdo->query("
-    SELECT ro.rent_id, ro.rent_dateissued, ro.rent_datedue,
-           CONCAT(c.cust_firstname,' ',c.cust_lastname) AS customer_name,
-           car.car_model, car.car_type,
-           et.tick_status
-    FROM   rental_order ro
-    JOIN   customer c   ON ro.rent_custid = c.cust_id
-    JOIN   car          ON ro.rent_carid  = car.car_id
-    LEFT JOIN payment p ON p.pay_rentid   = ro.rent_id
-    LEFT JOIN eticket et ON et.tick_payid = p.pay_id
-    ORDER BY ro.rent_id DESC
-    LIMIT 8
-  ")->fetchAll();
-} catch (Exception $e) { $recentOrders = []; }
-
-// ── Monthly rentals for chart (last 6 months) ─────────────────────────────────
-try {
-  $chartData = $pdo->query("
-    SELECT DATE_FORMAT(rent_dateissued,'%b') AS month,
-           COUNT(*) AS total
-    FROM rental_order
-    WHERE rent_dateissued >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
-    GROUP BY MONTH(rent_dateissued), DATE_FORMAT(rent_dateissued,'%b')
-    ORDER BY MONTH(rent_dateissued)
-  ")->fetchAll();
-  $chartLabels = array_column($chartData, 'month');
-  $chartValues = array_column($chartData, 'total');
-} catch (Exception $e) { $chartLabels = []; $chartValues = []; }
+$chartLabels = array_keys($chartMap);
+$chartValues = array_values($chartMap);
 
 include 'includes/header.php';
 ?>
@@ -121,16 +110,16 @@ include 'includes/header.php';
         <h2 class="card-title-tv">Quick actions</h2>
       </div>
       <div class="card-body-tv d-flex flex-column gap-2">
-        <a href="pages/providers.php?action=add" class="btn-tv-primary w-100 justify-content-center">
+        <a href="pages/providers.php" class="btn-tv-primary w-100 justify-content-center">
           <i class="bi bi-plus-lg"></i> Add car provider
         </a>
-        <a href="pages/cars.php?action=add" class="btn-tv-orange w-100 justify-content-center" style="border-radius:6px; padding:8px 18px; font-size:13.5px; font-weight:600; display:flex; align-items:center; gap:6px; justify-content:center; text-decoration:none;">
+        <a href="pages/cars.php" class="btn-tv-orange w-100 justify-content-center" style="border-radius:6px;padding:8px 18px;font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:6px;text-decoration:none">
           <i class="bi bi-plus-lg"></i> Add car
         </a>
-        <a href="pages/drivers.php?action=add" class="btn-tv-ghost w-100 justify-content-center">
+        <a href="pages/drivers.php" class="btn-tv-ghost w-100 justify-content-center">
           <i class="bi bi-plus-lg"></i> Add driver
         </a>
-        <a href="pages/locations.php?action=add" class="btn-tv-ghost w-100 justify-content-center">
+        <a href="pages/locations.php" class="btn-tv-ghost w-100 justify-content-center">
           <i class="bi bi-plus-lg"></i> Add location
         </a>
       </div>
@@ -153,38 +142,25 @@ include 'includes/header.php';
   <div class="table-responsive">
     <table class="tv-table">
       <thead>
-        <tr>
-          <th>Order ID</th>
-          <th>Customer</th>
-          <th>Vehicle</th>
-          <th>Date issued</th>
-          <th>Due date</th>
-          <th>Status</th>
-        </tr>
+        <tr><th>Booking</th><th>Customer</th><th>Vehicle</th><th>Pickup date</th><th>Return date</th><th>Status</th></tr>
       </thead>
       <tbody>
-        <?php foreach ($recentOrders as $r): ?>
+        <?php foreach ($recentOrders as $r):
+          $status   = $r['bookingStatus'] ?? 'Upcoming';
+          $badgeCls = Firebase::statusBadge($status);
+          $start    = Firebase::msToDate($r['startDateMs'] ?? 0);
+          $end      = Firebase::msToDate($r['endDateMs']   ?? 0);
+        ?>
         <tr>
-          <td><strong style="color:var(--tv-blue)">#<?= htmlspecialchars($r['rent_id']) ?></strong></td>
-          <td><?= htmlspecialchars($r['customer_name']) ?></td>
+          <td><strong style="color:var(--tv-blue);font-family:monospace;font-size:12px"><?= htmlspecialchars(substr($r['id'], 0, 8)) ?>…</strong></td>
+          <td><?= htmlspecialchars($r['renterName'] ?? '—') ?></td>
           <td>
-            <?= htmlspecialchars($r['car_model']) ?>
-            <span style="font-size:12px;color:var(--text-secondary);margin-left:4px"><?= htmlspecialchars($r['car_type']) ?></span>
+            <?= htmlspecialchars($r['vehicleName'] ?? '—') ?>
+            <span style="font-size:12px;color:var(--text-secondary);margin-left:4px"><?= htmlspecialchars($r['vehicleCategory'] ?? '') ?></span>
           </td>
-          <td><?= htmlspecialchars($r['rent_dateissued']) ?></td>
-          <td><?= htmlspecialchars($r['rent_datedue']) ?></td>
-          <td>
-            <?php
-              $status = $r['tick_status'] ?? 'Pending';
-              $cls = match($status) {
-                'Active'    => 'badge-active',
-                'Completed' => 'badge-complete',
-                'Cancelled' => 'badge-cancel',
-                default     => 'badge-pending',
-              };
-            ?>
-            <span class="badge-tv <?= $cls ?>"><?= htmlspecialchars($status) ?></span>
-          </td>
+          <td><?= htmlspecialchars($start) ?></td>
+          <td><?= htmlspecialchars($end) ?></td>
+          <td><span class="badge-tv <?= $badgeCls ?>"><?= htmlspecialchars(Firebase::statusLabel($status)) ?></span></td>
         </tr>
         <?php endforeach; ?>
       </tbody>

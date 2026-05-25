@@ -5,38 +5,55 @@ $activePage = 'customers';
 $msg = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-  $action = $_POST['action'] ?? '';
-  if ($action === 'update') {
-    $pdo->prepare("UPDATE customer SET cust_title=?,cust_firstname=?,cust_middlename=?,cust_lastname=?,cust_mobilenumber=?,cust_email=? WHERE cust_id=?")
-      ->execute([
-        trim($_POST['cust_title'] ?? ''), trim($_POST['cust_firstname']), trim($_POST['cust_middlename'] ?? ''),
-        trim($_POST['cust_lastname']), trim($_POST['cust_mobilenumber']), trim($_POST['cust_email']),
-        intval($_POST['cust_id'])
-      ]);
-    $msg = 'success:Customer updated.';
-  } elseif ($action === 'delete') {
-    $id  = intval($_POST['cust_id']);
-    $cnt = $pdo->prepare("SELECT COUNT(*) FROM rental_order WHERE rent_custid=?");
-    $cnt->execute([$id]);
-    if ($cnt->fetchColumn() > 0) {
-      $msg = 'error:Cannot delete this customer — they have rental orders on record. Remove those orders first.';
-    } else {
-      $pdo->prepare("DELETE FROM customer WHERE cust_id=?")->execute([$id]);
-      $msg = 'success:Customer removed.';
+    $action = $_POST['action'] ?? '';
+    $uid    = trim($_POST['cust_id'] ?? '');
+    $reason = trim($_POST['reason']  ?? '');
+
+    if ($action === 'deactivate' && $uid) {
+        $user = fb()->getDoc('users', $uid);
+        fb()->updateDoc('users', $uid, [
+            'isActive'            => false,
+            'deactivationReason'  => $reason ?: 'Your account has been deactivated by an administrator.',
+        ]);
+        $email = $user['email'] ?? '';
+        $name  = $user['fullName'] ?? 'Customer';
+        if ($email) {
+            $body = "Hi {$name},\n\nYour Traveloka Car Rental account has been deactivated.\n"
+                  . ($reason ? "Reason: {$reason}\n" : '')
+                  . "\nIf you believe this is a mistake, please contact support.\n\nTraveloka Car Rental";
+            @mail($email, 'Your account has been deactivated — Traveloka Car Rental', $body,
+                  "From: noreply@traveloka-carrental.com\r\nContent-Type: text/plain; charset=UTF-8");
+        }
+        $msg = 'success:Customer deactivated. A notification has been sent to ' . htmlspecialchars($email) . '.';
     }
-  }
+
+    if ($action === 'reactivate' && $uid) {
+        $user = fb()->getDoc('users', $uid);
+        fb()->updateDoc('users', $uid, [
+            'isActive'           => true,
+            'deactivationReason' => '',
+        ]);
+        $email = $user['email'] ?? '';
+        $name  = $user['fullName'] ?? 'Customer';
+        if ($email) {
+            $body = "Hi {$name},\n\nGood news! Your Traveloka Car Rental account has been reactivated. You can now log in again.\n\nTraveloka Car Rental";
+            @mail($email, 'Your account has been reactivated — Traveloka Car Rental', $body,
+                  "From: noreply@traveloka-carrental.com\r\nContent-Type: text/plain; charset=UTF-8");
+        }
+        $msg = 'success:Customer reactivated successfully.';
+    }
 }
 
-$search = trim($_GET['q'] ?? '');
-try {
-  if ($search) {
-    $stmt = $pdo->prepare("SELECT * FROM customer WHERE cust_firstname LIKE ? OR cust_lastname LIKE ? OR cust_email LIKE ? ORDER BY cust_id DESC");
-    $stmt->execute(["%$search%","%$search%","%$search%"]);
-  } else {
-    $stmt = $pdo->query("SELECT * FROM customer ORDER BY cust_id DESC");
-  }
-  $customers = $stmt->fetchAll();
-} catch (Exception $e) { $customers = []; }
+$search    = trim($_GET['q'] ?? '');
+$customers = fb()->query('users', [['field' => 'role', 'op' => 'EQUAL', 'value' => 'customer']]);
+if ($search) {
+    $sq = strtolower($search);
+    $customers = array_filter($customers, fn($c) =>
+        str_contains(strtolower($c['fullName'] ?? ''), $sq) ||
+        str_contains(strtolower($c['email']    ?? ''), $sq)
+    );
+}
+$customers = array_values($customers);
 
 include '../includes/header.php';
 ?>
@@ -47,6 +64,13 @@ include '../includes/header.php';
     <p class="page-subtitle"><?= count($customers) ?> registered customer<?= count($customers) !== 1 ? 's' : '' ?></p>
   </div>
 </div>
+
+<?php if ($msg): [$type,$text] = explode(':', $msg, 2); ?>
+<div class="alert-tv <?= $type === 'success' ? 'success' : 'error' ?>" style="margin-bottom:20px">
+  <i class="bi bi-<?= $type === 'success' ? 'check-circle-fill' : 'exclamation-circle-fill' ?>"></i>
+  <?= htmlspecialchars($text) ?>
+</div>
+<?php endif; ?>
 
 <div class="content-card">
   <div class="card-header-tv">
@@ -61,30 +85,45 @@ include '../includes/header.php';
   <?php else: ?>
   <div class="table-responsive">
     <table class="tv-table">
-      <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Mobile</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Name</th><th>Email</th><th>Mobile</th><th>Status</th><th>Actions</th></tr></thead>
       <tbody>
-        <?php foreach ($customers as $c): ?>
+        <?php foreach ($customers as $c):
+          $initials = strtoupper(substr($c['fullName'] ?? 'U', 0, 1));
+        ?>
         <tr>
-          <td><strong style="color:var(--tv-blue)">#<?= $c['cust_id'] ?></strong></td>
           <td>
             <div style="display:flex;align-items:center;gap:10px">
               <div style="width:32px;height:32px;border-radius:50%;background:var(--tv-blue-light);color:var(--tv-blue);display:flex;align-items:center;justify-content:center;font-weight:600;font-size:12px;flex-shrink:0">
-                <?= strtoupper(substr($c['cust_firstname'],0,1).substr($c['cust_lastname'],0,1)) ?>
+                <?= $initials ?>
               </div>
-              <div>
-                <strong><?= htmlspecialchars(($c['cust_title'] ? $c['cust_title'].' ' : '').trim($c['cust_firstname'].' '.($c['cust_middlename'] ? $c['cust_middlename'].' ' : '').$c['cust_lastname'])) ?></strong>
-              </div>
+              <strong><?= htmlspecialchars(($c['title'] ?? '') ? $c['title'].' '.($c['fullName'] ?? '') : ($c['fullName'] ?? '')) ?></strong>
             </div>
           </td>
-          <td><?= htmlspecialchars($c['cust_email']) ?></td>
-          <td><?= htmlspecialchars($c['cust_mobilenumber']) ?></td>
-          <td style="display:flex;gap:6px">
-            <button class="btn-icon" onclick='openEdit(<?= json_encode($c) ?>)'><i class="bi bi-pencil"></i></button>
-            <form id="del_cust_<?= $c['cust_id'] ?>" method="post" style="display:none">
-              <input type="hidden" name="action"  value="delete">
-              <input type="hidden" name="cust_id" value="<?= $c['cust_id'] ?>">
-            </form>
-            <button class="btn-icon danger" title="Delete" onclick='confirmDelete("customer","del_cust_<?= $c['cust_id'] ?>",<?= json_encode(trim($c['cust_firstname'].' '.$c['cust_lastname']), JSON_HEX_APOS) ?>)'><i class="bi bi-trash3"></i></button>
+          <td><?= htmlspecialchars($c['email'] ?? '') ?></td>
+          <td><?= htmlspecialchars($c['phone'] ?? '') ?></td>
+          <?php $isActive = $c['isActive'] ?? true; ?>
+          <td>
+            <?php if ($isActive): ?>
+              <span class="badge-tv badge-active">Active</span>
+            <?php else: ?>
+              <span class="badge-tv badge-cancel">Inactive</span>
+            <?php endif; ?>
+          </td>
+          <td>
+            <?php if ($isActive): ?>
+              <button class="btn-icon danger" title="Deactivate"
+                onclick='openDeactivate(<?= json_encode(["id"=>$c["id"],"name"=>$c["fullName"]??"","action"=>"deactivate"]) ?>)'>
+                <i class="bi bi-slash-circle"></i>
+              </button>
+            <?php else: ?>
+              <form method="post" style="display:contents">
+                <input type="hidden" name="action"  value="reactivate">
+                <input type="hidden" name="cust_id" value="<?= htmlspecialchars($c['id']) ?>">
+                <button type="submit" class="btn-icon" title="Reactivate" style="color:#16A34A;border-color:#86EFAC">
+                  <i class="bi bi-check-circle"></i>
+                </button>
+              </form>
+            <?php endif; ?>
           </td>
         </tr>
         <?php endforeach; ?>
@@ -94,63 +133,38 @@ include '../includes/header.php';
   <?php endif; ?>
 </div>
 
-<div class="modal fade" id="customerModal" tabindex="-1">
-  <div class="modal-dialog modal-dialog-centered">
+
+<!-- Deactivate modal -->
+<div class="modal fade" id="deactivateModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
     <form method="post" class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title">Edit customer</h5>
+        <h5 class="modal-title"><i class="bi bi-slash-circle" style="color:#DC2626;margin-right:6px"></i>Deactivate customer</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
-        <input type="hidden" name="action"  value="update">
-        <input type="hidden" name="cust_id" id="fm_id" value="">
-        <div class="row g-3">
-          <div class="col-md-3">
-            <label class="form-label-tv">Title</label>
-            <select name="cust_title" id="fm_title" class="tv-select">
-              <option value="">—</option><option>Mr.</option><option>Ms.</option><option>Mrs.</option>
-            </select>
-          </div>
-          <div class="col-md-9">
-            <label class="form-label-tv">First name *</label>
-            <input type="text" name="cust_firstname" id="fm_first" class="tv-input" required maxlength="50">
-          </div>
-          <div class="col-md-6">
-            <label class="form-label-tv">Middle name</label>
-            <input type="text" name="cust_middlename" id="fm_mid" class="tv-input" maxlength="50">
-          </div>
-          <div class="col-md-6">
-            <label class="form-label-tv">Last name *</label>
-            <input type="text" name="cust_lastname" id="fm_last" class="tv-input" required maxlength="50">
-          </div>
-          <div class="col-md-6">
-            <label class="form-label-tv">Mobile *</label>
-            <input type="text" name="cust_mobilenumber" id="fm_mobile" class="tv-input" required maxlength="20">
-          </div>
-          <div class="col-md-6">
-            <label class="form-label-tv">Email *</label>
-            <input type="email" name="cust_email" id="fm_email" class="tv-input" required maxlength="100">
-          </div>
-        </div>
+        <input type="hidden" name="action"  value="deactivate">
+        <input type="hidden" name="cust_id" id="dm_id" value="">
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+          Deactivating <strong id="dm_name"></strong> will prevent them from logging in. They will be notified by email.
+        </p>
+        <label class="form-label-tv">Reason <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted)">(optional)</span></label>
+        <textarea name="reason" id="dm_reason" class="tv-input" rows="3" maxlength="300" placeholder="e.g. Violation of terms of service…" style="resize:vertical;height:auto;padding:8px 12px"></textarea>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn-tv-ghost" data-bs-dismiss="modal">Cancel</button>
-        <button type="submit" class="btn-tv-primary"><i class="bi bi-check-lg"></i> Save</button>
+        <button type="submit" class="btn-tv-primary" style="background:#DC2626;border-color:#DC2626"><i class="bi bi-slash-circle"></i> Deactivate</button>
       </div>
     </form>
   </div>
 </div>
 
 <script>
-function openEdit(c) {
-  document.getElementById('fm_id').value     = c.cust_id;
-  document.getElementById('fm_title').value  = c.cust_title || '';
-  document.getElementById('fm_first').value  = c.cust_firstname;
-  document.getElementById('fm_mid').value    = c.cust_middlename || '';
-  document.getElementById('fm_last').value   = c.cust_lastname;
-  document.getElementById('fm_mobile').value = c.cust_mobilenumber;
-  document.getElementById('fm_email').value  = c.cust_email;
-  new bootstrap.Modal(document.getElementById('customerModal')).show();
+function openDeactivate(data) {
+  document.getElementById('dm_id').value   = data.id;
+  document.getElementById('dm_name').textContent = data.name;
+  document.getElementById('dm_reason').value = '';
+  new bootstrap.Modal(document.getElementById('deactivateModal')).show();
 }
 </script>
 

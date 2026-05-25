@@ -5,8 +5,18 @@ if (!isset($_SESSION['provider_logged_in']) || $_SESSION['provider_logged_in'] !
     header('Location: /Traveloka/index.php');
     exit;
 }
-$provId   = $_SESSION['provider_id']   ?? 0;
+$provId   = $_SESSION['provider_id']   ?? '';
 $provName = $_SESSION['provider_name'] ?? 'Provider';
+
+// Live deactivation check — kick mid-session if admin has deactivated this provider
+if ($provId) {
+    $__vendor = fb()->getDoc('vendors', $provId);
+    if (!$__vendor || ($__vendor['isActive'] ?? true) === false) {
+        session_destroy();
+        header('Location: /Traveloka/index.php?deactivated=1');
+        exit;
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -18,6 +28,7 @@ $provName = $_SESSION['provider_name'] ?? 'Provider';
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Plus+Jakarta+Sans:wght@600;700&display=swap" rel="stylesheet">
   <link href="/Traveloka/ProviderDashboard/assets/css/provider.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </head>
 <body>
 

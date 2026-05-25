@@ -2,91 +2,44 @@
 require_once __DIR__ . '/includes/db.php';
 $pageTitle  = 'Dashboard';
 $activePage = 'dashboard';
-
-// Session guard inline
 if (session_status() === PHP_SESSION_NONE) session_start();
 if (!isset($_SESSION['provider_logged_in']) || $_SESSION['provider_logged_in'] !== true) {
     header('Location: /Traveloka/index.php'); exit;
 }
-$provId   = $_SESSION['provider_id']   ?? 0;
+$provId   = $_SESSION['provider_id']   ?? '';
 $provName = $_SESSION['provider_name'] ?? 'Provider';
 
 // ── Stats (scoped to this provider) ──────────────────────────────────────────
-$stats = [];
-$queries = [
-  'cars'     => "SELECT COUNT(*) FROM car WHERE car_provid = ?",
-  'drivers'  => "SELECT COUNT(*) FROM driver_details dd
-                  JOIN rental_order ro ON ro.rent_driveid = dd.drive_id
-                  JOIN car c ON c.car_id = ro.rent_carid
-                  WHERE c.car_provid = ?",
-  'orders'   => "SELECT COUNT(*) FROM rental_order ro
-                  JOIN car c ON c.car_id = ro.rent_carid WHERE c.car_provid = ?",
-  'active'   => "SELECT COUNT(*) FROM eticket et
-                  JOIN payment p ON p.pay_id = et.tick_payid
-                  JOIN rental_order ro ON ro.rent_id = p.pay_rentid
-                  JOIN car c ON c.car_id = ro.rent_carid
-                  WHERE c.car_provid = ? AND et.tick_status = 'Active'",
-  'revenue'  => "SELECT COALESCE(SUM(p.pay_amount),0) FROM payment p
-                  JOIN rental_order ro ON ro.rent_id = p.pay_rentid
-                  JOIN car c ON c.car_id = ro.rent_carid WHERE c.car_provid = ?",
-  'pending'  => "SELECT COUNT(*) FROM eticket et
-                  JOIN payment p ON p.pay_id = et.tick_payid
-                  JOIN rental_order ro ON ro.rent_id = p.pay_rentid
-                  JOIN car c ON c.car_id = ro.rent_carid
-                  WHERE c.car_provid = ? AND et.tick_status = 'Pending'",
+$myVehicles = fb()->query('vehicles', [['field' => 'vendorId', 'op' => 'EQUAL', 'value' => $provId]]);
+$myBookings = fb()->query('bookings', [['field' => 'vendorId', 'op' => 'EQUAL', 'value' => $provId]]);
+$paidBookings = array_filter($myBookings, fn($b) => !empty($b['qrCode']));
+
+$stats = [
+    'cars'    => count($myVehicles),
+    'drivers' => count(fb()->query('drivers', [['field' => 'vendorId', 'op' => 'EQUAL', 'value' => $provId]])),
+    'orders'  => count($paidBookings),
+    'active'  => count(array_filter($paidBookings, fn($b) => ($b['bookingStatus'] ?? '') === 'Ongoing')),
+    'revenue' => array_sum(array_map(fn($b) => floatval($b['totalPrice'] ?? 0), $paidBookings)),
+    'pending' => count(array_filter($paidBookings, fn($b) => ($b['bookingStatus'] ?? '') === 'Upcoming')),
 ];
-foreach ($queries as $key => $sql) {
-  try { $stmt = $pdo->prepare($sql); $stmt->execute([$provId]); $stats[$key] = $stmt->fetchColumn(); }
-  catch (Exception $e) { $stats[$key] = 0; }
+
+// ── Recent orders (last 7 paid bookings) ─────────────────────────────────────
+$recentOrders = array_slice(array_values($paidBookings), 0, 7);
+
+// ── Monthly chart (last 6 months) ────────────────────────────────────────────
+$chartMap     = [];
+$sixMonthsAgo = strtotime('-6 months') * 1000;
+foreach ($paidBookings as $b) {
+    $ms = intval($b['startDateMs'] ?? 0);
+    if ($ms < $sixMonthsAgo) continue;
+    $month = date('M', intdiv($ms, 1000));
+    $chartMap[$month] = ($chartMap[$month] ?? 0) + 1;
 }
+$chartLabels = array_keys($chartMap);
+$chartValues = array_values($chartMap);
 
-// ── Recent orders ─────────────────────────────────────────────────────────────
-try {
-  $stmt = $pdo->prepare("
-    SELECT ro.rent_id, ro.rent_dateissued, ro.rent_datedue,
-           ro.rent_pickuplocation, ro.rent_dropofflocation,
-           CONCAT(cu.cust_firstname,' ',cu.cust_lastname) AS customer_name,
-           ca.car_model, ca.car_type,
-           et.tick_status,
-           CONCAT(dd.drive_firstname,' ',dd.drive_lastname) AS driver_name
-    FROM rental_order ro
-    JOIN car ca      ON ca.car_id   = ro.rent_carid
-    JOIN customer cu ON cu.cust_id  = ro.rent_custid
-    LEFT JOIN payment p   ON p.pay_rentid  = ro.rent_id
-    LEFT JOIN eticket et  ON et.tick_payid = p.pay_id
-    LEFT JOIN driver_details dd ON dd.drive_id = ro.rent_driveid
-    WHERE ca.car_provid = ?
-    ORDER BY ro.rent_id DESC
-    LIMIT 7
-  ");
-  $stmt->execute([$provId]);
-  $recentOrders = $stmt->fetchAll();
-} catch (Exception $e) { $recentOrders = []; }
-
-// ── Monthly chart (last 6 months, this provider) ──────────────────────────────
-try {
-  $stmt = $pdo->prepare("
-    SELECT DATE_FORMAT(ro.rent_dateissued,'%b') AS month,
-           COUNT(*) AS total
-    FROM rental_order ro
-    JOIN car c ON c.car_id = ro.rent_carid
-    WHERE c.car_provid = ?
-      AND ro.rent_dateissued >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
-    GROUP BY MONTH(ro.rent_dateissued), DATE_FORMAT(ro.rent_dateissued,'%b')
-    ORDER BY MONTH(ro.rent_dateissued)
-  ");
-  $stmt->execute([$provId]);
-  $chart = $stmt->fetchAll();
-  $chartLabels = array_column($chart, 'month');
-  $chartValues = array_column($chart, 'total');
-} catch (Exception $e) { $chartLabels = []; $chartValues = []; }
-
-// ── Fleet availability ────────────────────────────────────────────────────────
-try {
-  $stmt = $pdo->prepare("SELECT car_model, car_type, car_capacity, car_rentalrate FROM car WHERE car_provid = ? ORDER BY car_id DESC LIMIT 5");
-  $stmt->execute([$provId]);
-  $fleetPreview = $stmt->fetchAll();
-} catch (Exception $e) { $fleetPreview = []; }
+// ── Fleet preview (first 5 vehicles) ─────────────────────────────────────────
+$fleetPreview = array_slice($myVehicles, 0, 5);
 
 include __DIR__ . '/includes/header.php';
 ?>
@@ -126,7 +79,7 @@ include __DIR__ . '/includes/header.php';
   <div class="stat-card">
     <div class="stat-icon"><i class="bi bi-person-badge"></i></div>
     <div class="stat-value"><?= number_format($stats['drivers']) ?></div>
-    <div class="stat-label">Assigned drivers</div>
+    <div class="stat-label">Registered drivers</div>
   </div>
   <div class="stat-card green">
     <div class="stat-icon"><i class="bi bi-cash-stack"></i></div>
@@ -158,15 +111,21 @@ include __DIR__ . '/includes/header.php';
       <?php else: ?>
         <div style="padding:8px 0">
           <?php foreach ($fleetPreview as $car): ?>
+          <?php $fThumb = ($car['imageUrls'] ?? [])[0] ?? ''; ?>
           <div style="display:flex;align-items:center;gap:12px;padding:10px 22px;border-bottom:1px solid #F0F3F8">
+            <?php if ($fThumb): ?>
+              <img src="<?= htmlspecialchars($fThumb) ?>" alt=""
+                   style="width:36px;height:36px;border-radius:8px;object-fit:cover;flex-shrink:0;border:1px solid var(--border)">
+            <?php else: ?>
             <div style="width:36px;height:36px;border-radius:8px;background:var(--tv-blue-light);color:var(--tv-blue);display:flex;align-items:center;justify-content:center;flex-shrink:0">
               <i class="bi bi-car-front"></i>
             </div>
+            <?php endif; ?>
             <div style="flex:1;min-width:0">
-              <div style="font-size:13px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><?= htmlspecialchars($car['car_model']) ?></div>
-              <div style="font-size:11.5px;color:var(--text-secondary)"><?= htmlspecialchars($car['car_type']) ?> &middot; <?= $car['car_capacity'] ?> seats</div>
+              <div style="font-size:13px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><?= htmlspecialchars($car['name'] ?? '') ?></div>
+              <div style="font-size:11.5px;color:var(--text-secondary)"><?= htmlspecialchars($car['category'] ?? '') ?> &middot; <?= intval($car['seatingCapacity'] ?? 0) ?> seats</div>
             </div>
-            <div style="font-size:12.5px;font-weight:600;color:var(--tv-blue);flex-shrink:0">₱<?= number_format($car['car_rentalrate'],0) ?>/day</div>
+            <div style="font-size:12.5px;font-weight:600;color:var(--tv-blue);flex-shrink:0">₱<?= number_format(floatval($car['pricePerDay'] ?? 0),0) ?>/day</div>
           </div>
           <?php endforeach; ?>
         </div>
@@ -187,36 +146,35 @@ include __DIR__ . '/includes/header.php';
   <div class="table-responsive">
     <table class="tv-table">
       <thead>
-        <tr><th>Order ID</th><th>Customer</th><th>Vehicle</th><th>Pickup</th><th>Dates</th><th>Driver</th><th>Status</th></tr>
+        <tr><th>Booking</th><th>Customer</th><th>Vehicle</th><th>Pickup</th><th>Dates</th><th>Driver</th><th>Status</th></tr>
       </thead>
       <tbody>
-        <?php foreach ($recentOrders as $o): ?>
+        <?php foreach ($recentOrders as $o):
+          $status   = $o['bookingStatus'] ?? 'Upcoming';
+          $badgeCls = Firebase::statusBadge($status);
+          $start    = Firebase::msToDate($o['startDateMs'] ?? 0);
+          $end      = Firebase::msToDate($o['endDateMs']   ?? 0);
+        ?>
         <tr>
-          <td><strong style="color:var(--tv-blue)">#<?= $o['rent_id'] ?></strong></td>
-          <td><?= htmlspecialchars($o['customer_name']) ?></td>
+          <td><strong style="color:var(--tv-blue);font-family:monospace;font-size:12px"><?= htmlspecialchars(substr($o['id'],0,8)) ?>…</strong></td>
+          <td><?= htmlspecialchars($o['renterName'] ?? '—') ?></td>
           <td>
-            <?= htmlspecialchars($o['car_model']) ?>
-            <span style="font-size:12px;color:var(--text-secondary);margin-left:4px"><?= htmlspecialchars($o['car_type']) ?></span>
+            <?= htmlspecialchars($o['vehicleName'] ?? '—') ?>
+            <span style="font-size:12px;color:var(--text-secondary);margin-left:4px"><?= htmlspecialchars($o['vehicleCategory'] ?? '') ?></span>
           </td>
-          <td style="font-size:12.5px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><?= htmlspecialchars($o['rent_pickuplocation']) ?></td>
+          <td style="font-size:12.5px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><?= htmlspecialchars($o['pickupLocation'] ?? '—') ?></td>
           <td>
-            <span style="font-size:12.5px"><?= htmlspecialchars($o['rent_dateissued']) ?></span><br>
-            <span style="font-size:12px;color:var(--text-secondary)">→ <?= htmlspecialchars($o['rent_datedue']) ?></span>
+            <span style="font-size:12.5px"><?= htmlspecialchars($start) ?></span><br>
+            <span style="font-size:12px;color:var(--text-secondary)">→ <?= htmlspecialchars($end) ?></span>
           </td>
           <td>
-            <?php if ($o['driver_name'] && trim($o['driver_name']) !== ' '): ?>
-              <span class="badge-tv badge-driver"><?= htmlspecialchars($o['driver_name']) ?></span>
+            <?php if (!empty($o['driverName'])): ?>
+              <span class="badge-tv badge-driver"><?= htmlspecialchars($o['driverName']) ?></span>
             <?php else: ?>
               <span class="badge-tv badge-nodriver">Self-drive</span>
             <?php endif; ?>
           </td>
-          <td>
-            <?php
-              $st  = $o['tick_status'] ?? 'Pending';
-              $cls = match($st) { 'Active'=>'badge-active','Completed'=>'badge-complete','Cancelled'=>'badge-cancel',default=>'badge-pending' };
-            ?>
-            <span class="badge-tv <?= $cls ?>"><?= htmlspecialchars($st) ?></span>
-          </td>
+          <td><span class="badge-tv <?= $badgeCls ?>"><?= htmlspecialchars(Firebase::statusLabel($status)) ?></span></td>
         </tr>
         <?php endforeach; ?>
       </tbody>

@@ -6,11 +6,9 @@ if (session_status() === PHP_SESSION_NONE) session_start();
 if (empty($_SESSION['customer_logged_in']) && empty($_SESSION['is_guest'])) {
     header('Location: /Traveloka/index.php'); exit;
 }
-$custId = $_SESSION['customer_id'] ?? 0;
 
-// Fetch locations for filter
-try { $locations = $pdo->query("SELECT * FROM location ORDER BY loctn_name")->fetchAll(); }
-catch (Exception $e) { $locations = []; }
+// Fetch vendors for provider filter
+$vendors = fb()->query('vendors', [['field' => 'status', 'op' => 'EQUAL', 'value' => 'approved']]);
 
 // Search filters
 $filterType  = $_GET['type']     ?? '';
@@ -18,58 +16,70 @@ $filterProv  = $_GET['provider'] ?? '';
 $filterMin   = $_GET['min']      ?? '';
 $filterMax   = $_GET['max']      ?? '';
 $filterSeats = $_GET['seats']    ?? '';
+$filterCity  = trim($_GET['city'] ?? '');
 
-// Fetch providers for filter
-try { $providers = $pdo->query("SELECT prov_id, prov_name FROM car_provider ORDER BY prov_name")->fetchAll(); }
-catch (Exception $e) { $providers = []; }
+// Fetch all active vehicles
+$vehicles = fb()->query('vehicles', [['field' => 'isActive', 'op' => 'EQUAL', 'value' => true]]);
 
-// Build query
-try {
-  $where = ['1=1'];
-  $params = [];
-  if ($filterType)  { $where[] = 'c.car_type = ?';       $params[] = $filterType; }
-  if ($filterProv)  { $where[] = 'c.car_provid = ?';     $params[] = $filterProv; }
-  if ($filterMin)   { $where[] = 'c.car_rentalrate >= ?'; $params[] = floatval($filterMin); }
-  if ($filterMax)   { $where[] = 'c.car_rentalrate <= ?'; $params[] = floatval($filterMax); }
-  if ($filterSeats) { $where[] = 'c.car_capacity >= ?';   $params[] = intval($filterSeats); }
-  $wc = implode(' AND ', $where);
+// Collect unique available cities from all vehicles (for the filter dropdown)
+$allCities = [];
+foreach ($vehicles as $v) {
+    foreach ($v['availableCities'] ?? [] as $city) {
+        $city = trim($city);
+        if ($city) $allCities[$city] = true;
+    }
+}
+ksort($allCities);
+$allCities = array_keys($allCities);
 
-  $stmt = $pdo->prepare("
-    SELECT c.*, cp.prov_name, cp.prov_withdriver
-    FROM car c
-    JOIN car_provider cp ON cp.prov_id = c.car_provid
-    WHERE $wc
-    ORDER BY c.car_rentalrate ASC
-  ");
-  $stmt->execute($params);
-  $cars = $stmt->fetchAll();
-} catch (Exception $e) { $cars = []; }
+// Apply filters in PHP (Firestore free tier has composite index limits)
+if ($filterType)  $vehicles = array_filter($vehicles, fn($c) => ($c['category'] ?? '') === $filterType);
+if ($filterProv)  $vehicles = array_filter($vehicles, fn($c) => ($c['vendorId'] ?? '') === $filterProv);
+if ($filterMin)   $vehicles = array_filter($vehicles, fn($c) => floatval($c['pricePerDay'] ?? 0) >= floatval($filterMin));
+if ($filterMax)   $vehicles = array_filter($vehicles, fn($c) => floatval($c['pricePerDay'] ?? 0) <= floatval($filterMax));
+if ($filterSeats) $vehicles = array_filter($vehicles, fn($c) => intval($c['seatingCapacity'] ?? 0) >= intval($filterSeats));
+if ($filterCity)  $vehicles = array_filter($vehicles, function($c) use ($filterCity) {
+    foreach ($c['availableCities'] ?? [] as $city) {
+        if (strtolower(trim($city)) === strtolower($filterCity)) return true;
+    }
+    return false;
+});
+
+// Sort by price asc
+usort($vehicles, fn($a, $b) => floatval($a['pricePerDay'] ?? 0) <=> floatval($b['pricePerDay'] ?? 0));
+$vehicles = array_values($vehicles);
 
 include __DIR__ . '/../includes/header.php';
 ?>
 
-<!-- Page header -->
-<div class="section-header" style="margin-bottom:24px">
-  <div>
-    <h1 class="section-title" style="font-size:22px">Find your car</h1>
-    <p style="font-size:13.5px;color:var(--text-secondary);margin-top:4px">
-      <?= count($cars) ?> car<?= count($cars) !== 1 ? 's' : '' ?> available
-    </p>
+<!-- Search top bar -->
+<div class="search-bar-tv">
+  <div class="search-bar-info">
+    <div class="search-bar-label"><i class="bi bi-car-front"></i> Available vehicles</div>
+    <div class="search-bar-value"><?= count($vehicles) ?> car<?= count($vehicles) !== 1 ? 's' : '' ?> found</div>
   </div>
+  <?php if ($filterType || $filterProv || $filterMin || $filterMax || $filterSeats || $filterCity): ?>
+  <div class="search-bar-divider"></div>
+  <div class="search-bar-count">Filters active</div>
+  <a href="/Traveloka/CustomerDashboard/pages/search.php"
+     style="display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.22);color:#fff;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;text-decoration:none;flex-shrink:0">
+    <i class="bi bi-x-circle"></i> Clear
+  </a>
+  <?php endif; ?>
 </div>
 
 <div class="row g-4">
   <!-- Filter sidebar -->
   <div class="col-lg-3">
-    <div class="content-card" style="position:sticky;top:80px">
-      <div class="card-header-tv">
-        <h2 class="card-title-tv" style="font-size:14px">Filters</h2>
-        <a href="/Traveloka/CustomerDashboard/pages/search.php" style="font-size:12px;color:var(--tv-blue);text-decoration:none">Reset</a>
+    <div class="filter-sidebar">
+      <div class="filter-sidebar-header">
+        <span class="filter-sidebar-title"><i class="bi bi-sliders"></i> Filters</span>
+        <a href="/Traveloka/CustomerDashboard/pages/search.php" style="font-size:12px;color:var(--tv-blue);text-decoration:none;font-weight:600">Reset</a>
       </div>
-      <div class="card-body-tv">
+      <div class="filter-sidebar-body">
         <form method="get">
-          <div class="mb-3">
-            <label class="form-label-tv">Car type</label>
+          <div class="filter-group">
+            <label class="filter-group-label">Car type</label>
             <select name="type" class="tv-select">
               <option value="">All types</option>
               <?php foreach (['Sedan','SUV','Van','MPV','Pickup','Hatchback'] as $t): ?>
@@ -77,33 +87,49 @@ include __DIR__ . '/../includes/header.php';
               <?php endforeach; ?>
             </select>
           </div>
-          <div class="mb-3">
-            <label class="form-label-tv">Provider</label>
+          <div class="filter-group">
+            <label class="filter-group-label">Provider</label>
             <select name="provider" class="tv-select">
               <option value="">All providers</option>
-              <?php foreach ($providers as $p): ?>
-              <option value="<?= $p['prov_id'] ?>" <?= $filterProv==$p['prov_id']?'selected':'' ?>><?= htmlspecialchars($p['prov_name']) ?></option>
+              <?php foreach ($vendors as $v):
+                $vid = $v['vendorId'] ?? $v['id'];
+              ?>
+              <option value="<?= htmlspecialchars($vid) ?>" <?= $filterProv===$vid?'selected':'' ?>>
+                <?= htmlspecialchars($v['businessName'] ?? '') ?>
+              </option>
               <?php endforeach; ?>
             </select>
           </div>
-          <div class="mb-3">
-            <label class="form-label-tv">Min seats</label>
-            <select name="seats" class="tv-select">
-              <option value="">Any</option>
-              <option value="2"  <?= $filterSeats=='2' ?'selected':'' ?>>2+</option>
-              <option value="4"  <?= $filterSeats=='4' ?'selected':'' ?>>4+</option>
-              <option value="6"  <?= $filterSeats=='6' ?'selected':'' ?>>6+</option>
-              <option value="8"  <?= $filterSeats=='8' ?'selected':'' ?>>8+</option>
+          <div class="filter-group">
+            <label class="filter-group-label">City / Location</label>
+            <select name="city" class="tv-select">
+              <option value="">All cities</option>
+              <?php foreach ($allCities as $city): ?>
+              <option value="<?= htmlspecialchars($city) ?>" <?= $filterCity===$city?'selected':'' ?>>
+                <?= htmlspecialchars($city) ?>
+              </option>
+              <?php endforeach; ?>
             </select>
           </div>
-          <div class="mb-3">
-            <label class="form-label-tv">Rate/day (₱)</label>
-            <div style="display:flex;gap:8px">
-              <input type="number" name="min" class="tv-input" placeholder="Min" value="<?= htmlspecialchars($filterMin) ?>" style="width:50%">
-              <input type="number" name="max" class="tv-input" placeholder="Max" value="<?= htmlspecialchars($filterMax) ?>" style="width:50%">
+          <div class="filter-group">
+            <label class="filter-group-label">Min. seats</label>
+            <select name="seats" class="tv-select">
+              <option value="">Any capacity</option>
+              <option value="2" <?= $filterSeats=='2'?'selected':'' ?>>2+ seats</option>
+              <option value="4" <?= $filterSeats=='4'?'selected':'' ?>>4+ seats</option>
+              <option value="6" <?= $filterSeats=='6'?'selected':'' ?>>6+ seats</option>
+              <option value="8" <?= $filterSeats=='8'?'selected':'' ?>>8+ seats</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label class="filter-group-label">Rate per day (₱)</label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="number" name="min" class="tv-input" placeholder="Min" value="<?= htmlspecialchars($filterMin) ?>" style="flex:1">
+              <span style="color:var(--text-muted);font-size:12px;flex-shrink:0">–</span>
+              <input type="number" name="max" class="tv-input" placeholder="Max" value="<?= htmlspecialchars($filterMax) ?>" style="flex:1">
             </div>
           </div>
-          <button type="submit" class="btn-tv-primary w-100 justify-content-center">
+          <button type="submit" class="btn-tv-primary" style="width:100%;justify-content:center">
             <i class="bi bi-funnel"></i> Apply filters
           </button>
         </form>
@@ -111,40 +137,60 @@ include __DIR__ . '/../includes/header.php';
     </div>
   </div>
 
-  <!-- Car grid -->
+  <!-- Car results -->
   <div class="col-lg-9">
-    <?php if (empty($cars)): ?>
-    <div class="empty-state">
-      <i class="bi bi-car-front"></i>
-      <h3>No cars found</h3>
-      <p>Try adjusting your filters.</p>
-      <a href="/Traveloka/CustomerDashboard/pages/search.php" class="btn-tv-ghost">Clear filters</a>
+    <?php if (empty($vehicles)): ?>
+    <div class="content-card">
+      <div class="empty-state">
+        <i class="bi bi-car-front"></i>
+        <h3>No cars match your filters</h3>
+        <p>Try adjusting your filters or clear them to see all available cars.</p>
+        <a href="/Traveloka/CustomerDashboard/pages/search.php" class="btn-tv-ghost">Clear all filters</a>
+      </div>
     </div>
     <?php else: ?>
     <div class="car-grid">
-      <?php foreach ($cars as $car): ?>
+      <?php foreach ($vehicles as $car):
+        $carId      = $car['vehicleId'] ?? $car['id'];
+        $withDriver = !empty($car['withDriver']);
+      ?>
+      <?php $carImg = ($car['imageUrls'] ?? [])[0] ?? ''; ?>
       <div class="car-card">
-        <div class="car-card-img">
-          <i class="bi bi-car-front-fill"></i>
-          <span class="badge-tv badge-complete car-card-type-badge"><?= htmlspecialchars($car['car_type']) ?></span>
-          <?php if ($car['prov_withdriver']): ?>
-          <span class="badge-tv" style="background:#EDE9FE;color:#5B21B6;position:absolute;bottom:10px;left:12px;font-size:10px">With driver</span>
+        <div class="car-card-img" style="<?= $carImg ? 'background:#000;' : '' ?>">
+          <?php if ($carImg): ?>
+            <img src="<?= htmlspecialchars($carImg) ?>" alt="<?= htmlspecialchars($car['name'] ?? '') ?>"
+                 style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block">
+          <?php else: ?>
+            <i class="bi bi-car-front-fill car-card-img-icon"></i>
+            <i class="bi bi-car-front car-card-img-main"></i>
+          <?php endif; ?>
+          <span class="car-card-badge"><?= htmlspecialchars($car['category'] ?? '') ?></span>
+          <?php if ($withDriver): ?>
+          <span class="car-card-driver-badge"><i class="bi bi-person-badge"></i> Driver</span>
           <?php endif; ?>
         </div>
         <div class="car-card-body">
-          <div class="car-card-model"><?= htmlspecialchars($car['car_model']) ?></div>
-          <div class="car-card-provider"><i class="bi bi-building" style="font-size:11px"></i> <?= htmlspecialchars($car['prov_name']) ?></div>
+          <div class="car-card-model"><?= htmlspecialchars($car['name'] ?? $car['model'] ?? '') ?></div>
+          <div class="car-card-provider"><i class="bi bi-building"></i><?= htmlspecialchars($car['vendorName'] ?? '') ?></div>
+          <?php $cities = $car['availableCities'] ?? []; if (!empty($cities)): ?>
+          <div class="car-card-provider" style="margin-top:2px"><i class="bi bi-geo-alt"></i><?= htmlspecialchars(implode(', ', array_slice($cities, 0, 3))) ?><?= count($cities) > 3 ? ' +'.( count($cities)-3).' more' : '' ?></div>
+          <?php endif; ?>
           <div class="car-card-specs">
-            <div class="car-spec"><i class="bi bi-people"></i><?= $car['car_capacity'] ?> seats</div>
-            <div class="car-spec"><i class="bi bi-luggage"></i><?= number_format($car['car_baggageload'],0) ?>kg</div>
+            <div class="car-spec"><i class="bi bi-people"></i> <?= intval($car['seatingCapacity'] ?? 0) ?> seats</div>
+            <div class="car-spec"><i class="bi bi-luggage"></i> <?= number_format(floatval($car['baggageLoad'] ?? 0),0) ?> kg</div>
+            <?php if ($withDriver): ?>
+            <div class="car-spec"><i class="bi bi-person-check"></i> Driver incl.</div>
+            <?php else: ?>
+            <div class="car-spec"><i class="bi bi-key"></i> Self-drive</div>
+            <?php endif; ?>
           </div>
         </div>
         <div class="car-card-footer">
           <div>
-            <div class="car-rate">₱<?= number_format($car['car_rentalrate'],2) ?></div>
-            <div class="car-rate-label">per day</div>
+            <div class="car-rate">₱<?= number_format(floatval($car['pricePerDay'] ?? 0),2) ?></div>
+            <div class="car-rate-per">per day</div>
           </div>
-          <a href="/Traveloka/CustomerDashboard/pages/book.php?car_id=<?= $car['car_id'] ?>" class="btn-tv-primary" style="padding:8px 16px;font-size:13px">
+          <a href="/Traveloka/CustomerDashboard/pages/book.php?car_id=<?= htmlspecialchars($carId) ?>" class="btn-tv-orange btn-sm">
             Book now <i class="bi bi-arrow-right"></i>
           </a>
         </div>

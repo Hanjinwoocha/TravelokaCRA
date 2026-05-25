@@ -50,10 +50,13 @@ if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== tru
       <i class="bi bi-person-badge"></i><span>Drivers</span>
     </a>
     <a href="/Traveloka/AdminDashboard/pages/locations.php" class="nav-item <?= ($activePage ?? '') === 'locations' ? 'active' : '' ?>">
-      <i class="bi bi-geo-alt"></i><span>Locations</span>
+      <i class="bi bi-geo-alt"></i><span>Cities</span>
     </a>
     <a href="/Traveloka/AdminDashboard/pages/customers.php" class="nav-item <?= ($activePage ?? '') === 'customers' ? 'active' : '' ?>">
       <i class="bi bi-people"></i><span>Customers</span>
+    </a>
+    <a href="/Traveloka/AdminDashboard/pages/promos.php" class="nav-item <?= ($activePage ?? '') === 'promos' ? 'active' : '' ?>">
+      <i class="bi bi-ticket-detailed"></i><span>Promo codes</span>
     </a>
 
     <div class="nav-section-label">Transactions</div>

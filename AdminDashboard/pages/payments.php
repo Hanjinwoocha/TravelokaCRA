@@ -3,39 +3,23 @@ require_once '../includes/db.php';
 $pageTitle  = 'Payments';
 $activePage = 'payments';
 
-$search = trim($_GET['q'] ?? '');
-try {
-  if ($search) {
-    $stmt = $pdo->prepare("
-      SELECT p.*, ro.rent_id, ro.rent_dateissued,
-             CONCAT(cu.cust_firstname,' ',cu.cust_lastname) AS customer_name,
-             et.tick_status
-      FROM payment p
-      JOIN rental_order ro ON ro.rent_id = p.pay_rentid
-      JOIN customer cu ON cu.cust_id = ro.rent_custid
-      LEFT JOIN eticket et ON et.tick_payid = p.pay_id
-      WHERE cu.cust_firstname LIKE ? OR cu.cust_lastname LIKE ? OR p.pay_method LIKE ?
-      ORDER BY p.pay_id DESC
-    ");
-    $stmt->execute(["%$search%","%$search%","%$search%"]);
-  } else {
-    $stmt = $pdo->query("
-      SELECT p.*, ro.rent_id, ro.rent_dateissued,
-             CONCAT(cu.cust_firstname,' ',cu.cust_lastname) AS customer_name,
-             et.tick_status
-      FROM payment p
-      JOIN rental_order ro ON ro.rent_id = p.pay_rentid
-      JOIN customer cu ON cu.cust_id = ro.rent_custid
-      LEFT JOIN eticket et ON et.tick_payid = p.pay_id
-      ORDER BY p.pay_id DESC
-    ");
-  }
-  $payments = $stmt->fetchAll();
-} catch (Exception $e) { $payments = []; }
+$search   = trim($_GET['q'] ?? '');
+$bookings = fb()->query('bookings', [], ['field' => 'createdAt', 'dir' => 'DESCENDING']);
 
-// Total revenue
-try { $totalRevenue = $pdo->query("SELECT COALESCE(SUM(pay_amount),0) FROM payment")->fetchColumn(); }
-catch (Exception $e) { $totalRevenue = 0; }
+// Only bookings that have been paid (have paymentMethod set)
+$payments = array_filter($bookings, fn($b) => !empty($b['paymentMethod']) && !empty($b['totalPrice']));
+
+if ($search) {
+    $sq = strtolower($search);
+    $payments = array_filter($payments, fn($b) =>
+        str_contains(strtolower($b['renterName']    ?? ''), $sq) ||
+        str_contains(strtolower($b['paymentMethod'] ?? ''), $sq) ||
+        str_contains(strtolower($b['promoCode']     ?? ''), $sq)
+    );
+}
+$payments = array_values($payments);
+
+$totalRevenue = array_sum(array_column($payments, 'totalPrice'));
 
 include '../includes/header.php';
 ?>
@@ -60,23 +44,24 @@ include '../includes/header.php';
   <?php else: ?>
   <div class="table-responsive">
     <table class="tv-table">
-      <thead><tr><th>Pay ID</th><th>Order</th><th>Customer</th><th>Amount</th><th>Method</th><th>Coupon</th><th>Discount</th><th>Date paid</th><th>Ticket status</th></tr></thead>
+      <thead><tr><th>Booking</th><th>Customer</th><th>Vehicle</th><th>Amount</th><th>Method</th><th>Promo</th><th>Discount</th><th>Status</th></tr></thead>
       <tbody>
-        <?php foreach ($payments as $p): ?>
+        <?php foreach ($payments as $b):
+          $status  = $b['bookingStatus'] ?? 'Upcoming';
+          $badgeCls = Firebase::statusBadge($status);
+        ?>
         <tr>
-          <td><strong style="color:var(--tv-blue)">#<?= $p['pay_id'] ?></strong></td>
-          <td><a href="rentals.php" style="color:var(--tv-blue);text-decoration:none">#<?= $p['rent_id'] ?></a></td>
-          <td><?= htmlspecialchars($p['customer_name']) ?></td>
-          <td><strong>₱<?= number_format($p['pay_amount'], 2) ?></strong></td>
-          <td><span class="badge-tv badge-complete"><?= htmlspecialchars($p['pay_method']) ?></span></td>
-          <td><?= $p['pay_couponcode'] ? htmlspecialchars($p['pay_couponcode']) : '—' ?></td>
-          <td><?= $p['pay_discountamt'] ? '₱'.number_format($p['pay_discountamt'],2) : '—' ?></td>
-          <td><?= htmlspecialchars($p['pay_datepaid']) ?></td>
+          <td><strong style="color:var(--tv-blue);font-family:monospace;font-size:11px"><?= htmlspecialchars(substr($b['id'],0,8)) ?>…</strong></td>
           <td>
-            <?php $st = $p['tick_status'] ?? '—';
-              $cls = match($st){ 'Active'=>'badge-active','Completed'=>'badge-complete','Cancelled'=>'badge-cancel','Pending'=>'badge-pending',default=>'' }; ?>
-            <?= $cls ? "<span class='badge-tv $cls'>".htmlspecialchars($st).'</span>' : '—' ?>
+            <strong><?= htmlspecialchars($b['renterName'] ?? '—') ?></strong><br>
+            <span style="font-size:12px;color:var(--text-secondary)"><?= htmlspecialchars($b['renterEmail'] ?? '') ?></span>
           </td>
+          <td><?= htmlspecialchars($b['vehicleName'] ?? '—') ?></td>
+          <td><strong>₱<?= number_format(floatval($b['totalPrice'] ?? 0), 2) ?></strong></td>
+          <td><span class="badge-tv badge-complete"><?= htmlspecialchars($b['paymentMethod'] ?? '—') ?></span></td>
+          <td><?= !empty($b['promoCode']) ? htmlspecialchars($b['promoCode']) : '—' ?></td>
+          <td><?= !empty($b['discountAmount']) && $b['discountAmount'] > 0 ? '₱'.number_format(floatval($b['discountAmount']),2) : '—' ?></td>
+          <td><span class="badge-tv <?= $badgeCls ?>"><?= htmlspecialchars(Firebase::statusLabel($status)) ?></span></td>
         </tr>
         <?php endforeach; ?>
       </tbody>

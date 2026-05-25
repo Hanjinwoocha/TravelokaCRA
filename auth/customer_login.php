@@ -1,15 +1,11 @@
 <?php
 if (session_status() === PHP_SESSION_NONE) session_start();
+if (!empty($_SESSION['customer_logged_in'])) { header('Location: /Traveloka/CustomerDashboard/index.php'); exit; }
 
-if (isset($_SESSION['customer_logged_in']) && $_SESSION['customer_logged_in'] === true) {
-    header('Location: /Traveloka/CustomerDashboard/index.php'); exit;
-}
-
-require_once __DIR__ . '/../AdminDashboard/includes/db.php';
+require_once __DIR__ . '/../includes/firebase.php';
 $error  = '';
-$errors = [];   // field-level errors
+$errors = [];
 
-// ── Register ──────────────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'register') {
     $title  = trim($_POST['cust_title']        ?? '');
     $first  = trim($_POST['cust_firstname']    ?? '');
@@ -19,7 +15,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'registe
     $email  = trim($_POST['cust_email']        ?? '');
     $pass   = trim($_POST['password']          ?? '');
 
-    // First name: required, letters + spaces/hyphens only, 2–50 chars
     if ($first === '') {
         $errors['first'] = 'First name is required.';
     } elseif (!preg_match('/^[A-Za-zÀ-ÖØ-öø-ÿ\s\-]+$/', $first)) {
@@ -28,14 +23,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'registe
         $errors['first'] = 'First name must be 2–50 characters.';
     }
 
-    // Middle name: optional, but if filled must be letters only
     if ($mid !== '' && !preg_match('/^[A-Za-zÀ-ÖØ-öø-ÿ\s\-]+$/', $mid)) {
         $errors['mid'] = 'Middle name may only contain letters, spaces, and hyphens.';
     } elseif ($mid !== '' && strlen($mid) > 50) {
         $errors['mid'] = 'Middle name must be 50 characters or fewer.';
     }
 
-    // Last name: required, letters only, 2–50 chars
     if ($last === '') {
         $errors['last'] = 'Last name is required.';
     } elseif (!preg_match('/^[A-Za-zÀ-ÖØ-öø-ÿ\s\-]+$/', $last)) {
@@ -44,21 +37,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'registe
         $errors['last'] = 'Last name must be 2–50 characters.';
     }
 
-    // Mobile: required, PH format — 09XXXXXXXXX or +639XXXXXXXXX (11 or 13 digits)
     if ($mobile === '') {
         $errors['mobile'] = 'Mobile number is required.';
     } elseif (!preg_match('/^(\+?63|0)9\d{9}$/', preg_replace('/\s+/', '', $mobile))) {
         $errors['mobile'] = 'Enter a valid PH mobile number (e.g. 09171234567).';
     }
 
-    // Email: required + valid format
     if ($email === '') {
         $errors['email'] = 'Email address is required.';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errors['email'] = 'Enter a valid email address.';
     }
 
-    // Password: required, min 8 chars, must have letter + number
     if ($pass === '') {
         $errors['pass'] = 'Password is required.';
     } elseif (strlen($pass) < 8) {
@@ -68,17 +58,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'registe
     }
 
     if (empty($errors)) {
-        $chk = $pdo->prepare("SELECT cust_id FROM customer WHERE cust_email = ?");
-        $chk->execute([$email]);
-        if ($chk->fetch()) {
-            $errors['email'] = 'An account with this email already exists.';
+        $fullName = trim($first . ($mid ? ' ' . $mid : '') . ' ' . $last);
+        $res = fb()->signUp($email, $pass, $fullName);
+
+        if (isset($res['error'])) {
+            $msg = $res['error']['message'] ?? '';
+            $errors['email'] = str_contains($msg, 'EMAIL_EXISTS')
+                ? 'An account with this email already exists.'
+                : 'Registration failed: ' . $msg;
         } else {
-            $pdo->prepare("INSERT INTO customer (cust_title, cust_firstname, cust_middlename, cust_lastname, cust_mobilenumber, cust_email, cust_password) VALUES (?,?,?,?,?,?,?)")
-                ->execute([$title, $first, $mid, $last, $mobile, $email, md5($pass)]);
-            $newId = $pdo->lastInsertId();
+            $uid = $res['localId'];
+            fb()->setDoc('users', $uid, [
+                'uid'        => $uid,
+                'role'       => 'customer',
+                'title'      => $title,
+                'fullName'   => $fullName,
+                'email'      => $email,
+                'phone'      => $mobile,
+                'photoUrl'   => '',
+                'fcmToken'   => '',
+                'promoNotificationsEnabled' => true,
+                'createdAt'  => Firebase::nowMs(),
+            ]);
             unset($_SESSION['is_guest']);
             $_SESSION['customer_logged_in'] = true;
-            $_SESSION['customer_id']        = $newId;
+            $_SESSION['customer_id']        = $uid;
             $_SESSION['customer_name']      = $first;
             header('Location: /Traveloka/CustomerDashboard/index.php'); exit;
         }
@@ -95,152 +99,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'registe
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Plus+Jakarta+Sans:wght@700;800;900&display=swap" rel="stylesheet">
   <style>
-    :root {
-      --blue: #0064D2; --blue-dk: #004FAA;
-      --orange: #FF6000; --navy: #001A3C;
-      --border: #E4E8EF; --muted: #637083;
-    }
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: 'Inter', sans-serif;
-      background: url('https://images.unsplash.com/photo-1485291571150-772bcfc10da5?w=1800&q=80') center/cover no-repeat fixed;
-      min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
-    }
-    body::before {
-      content: ''; position: fixed; inset: 0;
-      background: linear-gradient(150deg, rgba(0,15,45,0.78) 0%, rgba(0,30,80,0.6) 55%, rgba(0,10,30,0.5) 100%);
-    }
-
-    /* Card */
-    .card-wrap {
-      position: relative; z-index: 1;
-      background: #fff; border-radius: 22px;
-      box-shadow: 0 24px 64px rgba(0,0,0,0.28);
-      width: 100%; max-width: 980px;
-      display: flex; overflow: hidden;
-      min-height: 540px;
-    }
-
-    /* Left hero panel */
-    .hero-panel {
-      background: linear-gradient(145deg, var(--navy) 50%, #002B70);
-      flex: 0 0 340px; padding: 48px 40px;
-      display: flex; flex-direction: column; justify-content: space-between;
-      position: relative; overflow: hidden;
-    }
-    .hero-panel::before { content: ''; position: absolute; width: 260px; height: 260px; border-radius: 50%; border: 44px solid rgba(255,96,0,0.1); top: -80px; right: -80px; }
-    .hero-panel::after  { content: ''; position: absolute; width: 200px; height: 200px; border-radius: 50%; background: rgba(0,100,210,0.1); bottom: -60px; left: -60px; }
-    .hp-brand { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 900; font-size: 1.5rem; color: #fff; text-decoration: none; position: relative; z-index: 1; letter-spacing: -.4px; }
-    .hp-brand .t { color: var(--orange); }
-    .hp-body { position: relative; z-index: 1; }
-    .hp-title { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; font-size: 1.65rem; color: #fff; line-height: 1.2; letter-spacing: -.4px; margin-bottom: 12px; }
-    .hp-title span { color: var(--orange); }
-    .hp-sub { font-size: 13.5px; color: rgba(255,255,255,.5); line-height: 1.7; margin-bottom: 28px; }
-    .hp-perk { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
-    .hp-perk-icon { width: 32px; height: 32px; border-radius: 8px; background: rgba(0,100,210,.25); color: rgba(255,255,255,.8); display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; margin-top: 1px; }
-    .hp-perk-title { font-size: 13px; font-weight: 600; color: #fff; line-height: 1.3; }
-    .hp-perk-sub { font-size: 11.5px; color: rgba(255,255,255,.45); margin-top: 2px; }
-    .hp-foot { font-size: 11px; color: rgba(255,255,255,.18); position: relative; z-index: 1; }
-
-    /* Right form panel */
-    .form-panel { flex: 1; padding: 44px 48px; display: flex; flex-direction: column; justify-content: center; overflow-y: auto; }
-    .fp-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--orange); margin-bottom: 8px; }
-    .fp-title { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; font-size: 1.5rem; color: var(--navy); letter-spacing: -.3px; margin-bottom: 4px; }
-    .fp-sub { font-size: 13px; color: var(--muted); margin-bottom: 22px; }
-
-    /* Error boxes */
-    .err-box { background: #FEE2E2; border: 1px solid #FCA5A5; color: #991B1B; border-radius: 10px; padding: 11px 14px; font-size: 13px; display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
-    .field-err { font-size: 11.5px; color: #DC2626; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
-    .field-err i { font-size: 11px; flex-shrink: 0; }
-
-    /* Fields */
-    .f-label { display: block; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 5px; }
-    .f-wrap { position: relative; }
-    .f-wrap i.icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #B0BAC8; font-size: 13px; pointer-events: none; }
-    .f-input, .f-select {
-      width: 100%; height: 40px; border: 1.5px solid var(--border); border-radius: 9px;
-      padding: 0 12px; font-size: 13.5px; font-family: 'Inter', sans-serif;
-      color: #0D1B30; background: #FAFBFD; outline: none;
-      transition: border-color .14s, box-shadow .14s;
-    }
-    .f-input.has-icon { padding-left: 36px; }
-    .f-input:focus, .f-select:focus { border-color: var(--blue); background: #fff; box-shadow: 0 0 0 3px rgba(0,100,210,.09); }
-    .f-input.is-invalid, .f-select.is-invalid { border-color: #DC2626; background: #FFF5F5; }
-    .f-input.is-invalid:focus, .f-select.is-invalid:focus { box-shadow: 0 0 0 3px rgba(220,38,38,.1); }
-    .f-input.is-valid { border-color: #16A34A; }
-    .f-grid { display: grid; gap: 12px; }
-    .f-grid-3 { grid-template-columns: 0.7fr 1fr 1fr; }
-    .f-grid-2 { grid-template-columns: 1fr 1fr; }
-    .f-mb { margin-bottom: 12px; }
-
-    /* Password strength bar */
-    .pass-strength { margin-top: 5px; height: 3px; border-radius: 99px; background: var(--border); overflow: hidden; }
-    .pass-strength-bar { height: 100%; border-radius: 99px; width: 0; transition: width .3s, background .3s; }
-    .pass-hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
-
-    /* Submit */
-    .btn-submit {
-      width: 100%; height: 44px; background: var(--blue); color: #fff; border: none;
-      border-radius: 9px; font-size: 14.5px; font-weight: 700; font-family: 'Inter', sans-serif;
-      cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
-      box-shadow: 0 4px 14px rgba(0,100,210,.28); margin-top: 18px;
-      transition: background .14s, transform .1s;
-    }
-    .btn-submit:hover { background: var(--blue-dk); transform: translateY(-1px); }
-
-    .fp-foot { font-size: 12.5px; color: var(--muted); text-align: center; margin-top: 14px; }
-    .fp-foot a { color: var(--blue); font-weight: 600; text-decoration: none; }
-    .fp-foot a:hover { text-decoration: underline; }
-
-    @media (max-width: 767px) {
-      .hero-panel { display: none; }
-      .form-panel { padding: 36px 28px; }
-      .f-grid-3 { grid-template-columns: 1fr 1fr; }
-    }
-    @media (max-width: 480px) {
-      .f-grid-3, .f-grid-2 { grid-template-columns: 1fr; }
-      .form-panel { padding: 28px 20px; }
-    }
+    :root { --blue:#0064D2; --blue-dk:#004FAA; --orange:#FF6000; --navy:#001A3C; --border:#E4E8EF; --muted:#637083; }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Inter',sans-serif;background:url('https://images.unsplash.com/photo-1485291571150-772bcfc10da5?w=1800&q=80') center/cover no-repeat fixed;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+    body::before{content:'';position:fixed;inset:0;background:linear-gradient(150deg,rgba(0,15,45,0.78) 0%,rgba(0,30,80,0.6) 55%,rgba(0,10,30,0.5) 100%)}
+    .card-wrap{position:relative;z-index:1;background:#fff;border-radius:22px;box-shadow:0 24px 64px rgba(0,0,0,0.28);width:100%;max-width:980px;display:flex;overflow:hidden;min-height:540px}
+    .hero-panel{background:linear-gradient(145deg,var(--navy) 50%,#002B70);flex:0 0 340px;padding:48px 40px;display:flex;flex-direction:column;justify-content:space-between;position:relative;overflow:hidden}
+    .hero-panel::before{content:'';position:absolute;width:260px;height:260px;border-radius:50%;border:44px solid rgba(255,96,0,0.1);top:-80px;right:-80px}
+    .hero-panel::after{content:'';position:absolute;width:200px;height:200px;border-radius:50%;background:rgba(0,100,210,0.1);bottom:-60px;left:-60px}
+    .hp-brand{font-family:'Plus Jakarta Sans',sans-serif;font-weight:900;font-size:1.5rem;color:#fff;text-decoration:none;position:relative;z-index:1;letter-spacing:-.4px}
+    .hp-brand .t{color:var(--orange)}
+    .hp-body{position:relative;z-index:1}
+    .hp-title{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:1.65rem;color:#fff;line-height:1.2;letter-spacing:-.4px;margin-bottom:12px}
+    .hp-title span{color:var(--orange)}
+    .hp-sub{font-size:13.5px;color:rgba(255,255,255,.5);line-height:1.7;margin-bottom:28px}
+    .hp-perk{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px}
+    .hp-perk-icon{width:32px;height:32px;border-radius:8px;background:rgba(0,100,210,.25);color:rgba(255,255,255,.8);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;margin-top:1px}
+    .hp-perk-title{font-size:13px;font-weight:600;color:#fff;line-height:1.3}
+    .hp-perk-sub{font-size:11.5px;color:rgba(255,255,255,.45);margin-top:2px}
+    .hp-foot{font-size:11px;color:rgba(255,255,255,.18);position:relative;z-index:1}
+    .form-panel{flex:1;padding:44px 48px;display:flex;flex-direction:column;justify-content:center;overflow-y:auto}
+    .fp-eyebrow{font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--orange);margin-bottom:8px}
+    .fp-title{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:1.5rem;color:var(--navy);letter-spacing:-.3px;margin-bottom:4px}
+    .fp-sub{font-size:13px;color:var(--muted);margin-bottom:22px}
+    .err-box{background:#FEE2E2;border:1px solid #FCA5A5;color:#991B1B;border-radius:10px;padding:11px 14px;font-size:13px;display:flex;align-items:center;gap:8px;margin-bottom:18px}
+    .field-err{font-size:11.5px;color:#DC2626;margin-top:4px;display:flex;align-items:center;gap:4px}
+    .field-err i{font-size:11px;flex-shrink:0}
+    .f-label{display:block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:5px}
+    .f-wrap{position:relative}
+    .f-wrap i.icon{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#B0BAC8;font-size:13px;pointer-events:none}
+    .f-input,.f-select{width:100%;height:40px;border:1.5px solid var(--border);border-radius:9px;padding:0 12px;font-size:13.5px;font-family:'Inter',sans-serif;color:#0D1B30;background:#FAFBFD;outline:none;transition:border-color .14s,box-shadow .14s}
+    .f-input.has-icon{padding-left:36px}
+    .f-input:focus,.f-select:focus{border-color:var(--blue);background:#fff;box-shadow:0 0 0 3px rgba(0,100,210,.09)}
+    .f-input.is-invalid,.f-select.is-invalid{border-color:#DC2626;background:#FFF5F5}
+    .f-input.is-valid{border-color:#16A34A}
+    .f-grid{display:grid;gap:12px}
+    .f-grid-3{grid-template-columns:0.7fr 1fr 1fr}
+    .f-grid-2{grid-template-columns:1fr 1fr}
+    .f-mb{margin-bottom:12px}
+    .pass-strength{margin-top:5px;height:3px;border-radius:99px;background:var(--border);overflow:hidden}
+    .pass-strength-bar{height:100%;border-radius:99px;width:0;transition:width .3s,background .3s}
+    .pass-hint{font-size:11px;color:var(--muted);margin-top:4px}
+    .btn-submit{width:100%;height:44px;background:var(--blue);color:#fff;border:none;border-radius:9px;font-size:14.5px;font-weight:700;font-family:'Inter',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 4px 14px rgba(0,100,210,.28);margin-top:18px;transition:background .14s,transform .1s}
+    .btn-submit:hover{background:var(--blue-dk);transform:translateY(-1px)}
+    .fp-foot{font-size:12.5px;color:var(--muted);text-align:center;margin-top:14px}
+    .fp-foot a{color:var(--blue);font-weight:600;text-decoration:none}
+    @media(max-width:767px){.hero-panel{display:none}.form-panel{padding:36px 28px}.f-grid-3{grid-template-columns:1fr 1fr}}
+    @media(max-width:480px){.f-grid-3,.f-grid-2{grid-template-columns:1fr}.form-panel{padding:28px 20px}}
   </style>
 </head>
 <body>
 <div class="card-wrap">
-
-  <!-- Left: Hero panel -->
   <div class="hero-panel">
     <a href="/Traveloka/" class="hp-brand"><span class="t">t</span>raveloka</a>
-
     <div class="hp-body">
       <h2 class="hp-title">Join <span>thousands</span><br>of satisfied customers.</h2>
       <p class="hp-sub">Create a free account and unlock the full Traveloka experience.</p>
-
-      <div class="hp-perk">
-        <div class="hp-perk-icon"><i class="bi bi-ticket-perforated"></i></div>
-        <div>
-          <div class="hp-perk-title">Instant e-tickets</div>
-          <div class="hp-perk-sub">QR-code booking confirmation sent immediately</div>
-        </div>
-      </div>
-      <div class="hp-perk">
-        <div class="hp-perk-icon"><i class="bi bi-tag"></i></div>
-        <div>
-          <div class="hp-perk-title">Exclusive coupon codes</div>
-          <div class="hp-perk-sub">Up to 50% off for registered members</div>
-        </div>
-      </div>
-      <div class="hp-perk">
-        <div class="hp-perk-icon"><i class="bi bi-clock-history"></i></div>
-        <div>
-          <div class="hp-perk-title">Booking history</div>
-          <div class="hp-perk-sub">Track all your past and upcoming rentals</div>
-        </div>
-      </div>
+      <div class="hp-perk"><div class="hp-perk-icon"><i class="bi bi-ticket-perforated"></i></div><div><div class="hp-perk-title">Instant e-tickets</div><div class="hp-perk-sub">QR-code booking confirmation sent immediately</div></div></div>
+      <div class="hp-perk"><div class="hp-perk-icon"><i class="bi bi-tag"></i></div><div><div class="hp-perk-title">Exclusive coupon codes</div><div class="hp-perk-sub">Up to 50% off for registered members</div></div></div>
+      <div class="hp-perk"><div class="hp-perk-icon"><i class="bi bi-clock-history"></i></div><div><div class="hp-perk-title">Booking history</div><div class="hp-perk-sub">Track all your past and upcoming rentals</div></div></div>
     </div>
-
     <div class="hp-foot">&copy; <?= date('Y') ?> Traveloka Car Rental</div>
   </div>
 
-  <!-- Right: Form panel -->
   <div class="form-panel">
     <div class="fp-eyebrow">New account</div>
     <h1 class="fp-title">Create your account</h1>
@@ -253,7 +174,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'registe
     <form method="post" id="regForm" novalidate>
       <input type="hidden" name="form" value="register">
 
-      <!-- Row 1: Title + First + Last -->
       <div class="f-grid f-grid-3 f-mb">
         <div>
           <label class="f-label">Title</label>
@@ -267,194 +187,83 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form'] ?? '') === 'registe
         <div>
           <label class="f-label">First name *</label>
           <input type="text" name="cust_firstname" id="f_first"
-                 class="f-input <?= isset($errors['first']) ? 'is-invalid' : (isset($_POST['cust_firstname']) && !isset($errors['first']) && $_POST['cust_firstname'] !== '' ? 'is-valid' : '') ?>"
+                 class="f-input <?= isset($errors['first']) ? 'is-invalid' : '' ?>"
                  maxlength="50" value="<?= htmlspecialchars($_POST['cust_firstname'] ?? '') ?>">
-          <?php if (isset($errors['first'])): ?>
-          <div class="field-err"><i class="bi bi-exclamation-circle"></i><?= htmlspecialchars($errors['first']) ?></div>
-          <?php endif; ?>
+          <?php if (isset($errors['first'])): ?><div class="field-err"><i class="bi bi-exclamation-circle"></i><?= htmlspecialchars($errors['first']) ?></div><?php endif; ?>
         </div>
         <div>
           <label class="f-label">Last name *</label>
           <input type="text" name="cust_lastname" id="f_last"
-                 class="f-input <?= isset($errors['last']) ? 'is-invalid' : (isset($_POST['cust_lastname']) && !isset($errors['last']) && $_POST['cust_lastname'] !== '' ? 'is-valid' : '') ?>"
+                 class="f-input <?= isset($errors['last']) ? 'is-invalid' : '' ?>"
                  maxlength="50" value="<?= htmlspecialchars($_POST['cust_lastname'] ?? '') ?>">
-          <?php if (isset($errors['last'])): ?>
-          <div class="field-err"><i class="bi bi-exclamation-circle"></i><?= htmlspecialchars($errors['last']) ?></div>
-          <?php endif; ?>
+          <?php if (isset($errors['last'])): ?><div class="field-err"><i class="bi bi-exclamation-circle"></i><?= htmlspecialchars($errors['last']) ?></div><?php endif; ?>
         </div>
       </div>
 
-      <!-- Row 2: Middle + Mobile -->
       <div class="f-grid f-grid-2 f-mb">
         <div>
           <label class="f-label">Middle name <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></label>
           <input type="text" name="cust_middlename" id="f_mid"
                  class="f-input <?= isset($errors['mid']) ? 'is-invalid' : '' ?>"
                  maxlength="50" value="<?= htmlspecialchars($_POST['cust_middlename'] ?? '') ?>">
-          <?php if (isset($errors['mid'])): ?>
-          <div class="field-err"><i class="bi bi-exclamation-circle"></i><?= htmlspecialchars($errors['mid']) ?></div>
-          <?php endif; ?>
+          <?php if (isset($errors['mid'])): ?><div class="field-err"><i class="bi bi-exclamation-circle"></i><?= htmlspecialchars($errors['mid']) ?></div><?php endif; ?>
         </div>
         <div>
           <label class="f-label">Mobile number *</label>
-          <div class="f-wrap">
-            <i class="bi bi-phone icon"></i>
+          <div class="f-wrap"><i class="bi bi-phone icon"></i>
             <input type="text" name="cust_mobilenumber" id="f_mobile"
-                   class="f-input has-icon <?= isset($errors['mobile']) ? 'is-invalid' : (isset($_POST['cust_mobilenumber']) && !isset($errors['mobile']) && $_POST['cust_mobilenumber'] !== '' ? 'is-valid' : '') ?>"
+                   class="f-input has-icon <?= isset($errors['mobile']) ? 'is-invalid' : '' ?>"
                    maxlength="20" placeholder="09171234567"
                    value="<?= htmlspecialchars($_POST['cust_mobilenumber'] ?? '') ?>">
           </div>
-          <?php if (isset($errors['mobile'])): ?>
-          <div class="field-err"><i class="bi bi-exclamation-circle"></i><?= htmlspecialchars($errors['mobile']) ?></div>
-          <?php else: ?>
-          <div class="pass-hint">Format: 09XXXXXXXXX or +639XXXXXXXXX</div>
-          <?php endif; ?>
+          <?php if (isset($errors['mobile'])): ?><div class="field-err"><i class="bi bi-exclamation-circle"></i><?= htmlspecialchars($errors['mobile']) ?></div>
+          <?php else: ?><div class="pass-hint">Format: 09XXXXXXXXX or +639XXXXXXXXX</div><?php endif; ?>
         </div>
       </div>
 
-      <!-- Row 3: Email + Password -->
       <div class="f-grid f-grid-2 f-mb">
         <div>
           <label class="f-label">Email *</label>
-          <div class="f-wrap">
-            <i class="bi bi-envelope icon"></i>
+          <div class="f-wrap"><i class="bi bi-envelope icon"></i>
             <input type="email" name="cust_email" id="f_email"
-                   class="f-input has-icon <?= isset($errors['email']) ? 'is-invalid' : (isset($_POST['cust_email']) && !isset($errors['email']) && $_POST['cust_email'] !== '' ? 'is-valid' : '') ?>"
+                   class="f-input has-icon <?= isset($errors['email']) ? 'is-invalid' : '' ?>"
                    maxlength="100" value="<?= htmlspecialchars($_POST['cust_email'] ?? '') ?>">
           </div>
-          <?php if (isset($errors['email'])): ?>
-          <div class="field-err"><i class="bi bi-exclamation-circle"></i><?= htmlspecialchars($errors['email']) ?></div>
-          <?php endif; ?>
+          <?php if (isset($errors['email'])): ?><div class="field-err"><i class="bi bi-exclamation-circle"></i><?= htmlspecialchars($errors['email']) ?></div><?php endif; ?>
         </div>
         <div>
           <label class="f-label">Password *</label>
-          <div class="f-wrap">
-            <i class="bi bi-lock icon"></i>
+          <div class="f-wrap"><i class="bi bi-lock icon"></i>
             <input type="password" name="password" id="f_pass"
                    class="f-input has-icon <?= isset($errors['pass']) ? 'is-invalid' : '' ?>"
                    oninput="updateStrength(this.value)">
           </div>
           <div class="pass-strength"><div class="pass-strength-bar" id="strengthBar"></div></div>
-          <?php if (isset($errors['pass'])): ?>
-          <div class="field-err"><i class="bi bi-exclamation-circle"></i><?= htmlspecialchars($errors['pass']) ?></div>
-          <?php else: ?>
-          <div class="pass-hint" id="strengthHint">Min 8 characters with a letter and a number</div>
-          <?php endif; ?>
+          <?php if (isset($errors['pass'])): ?><div class="field-err"><i class="bi bi-exclamation-circle"></i><?= htmlspecialchars($errors['pass']) ?></div>
+          <?php else: ?><div class="pass-hint" id="strengthHint">Min 8 characters with a letter and a number</div><?php endif; ?>
         </div>
       </div>
 
-      <button type="submit" class="btn-submit">
-        <i class="bi bi-person-plus"></i> Create account
-      </button>
+      <button type="submit" class="btn-submit"><i class="bi bi-person-plus"></i> Create account</button>
     </form>
 
     <p class="fp-foot">Already have an account? <a href="/Traveloka/auth/signin.php">Sign in</a></p>
   </div>
-
 </div>
 
 <script>
-// ── Password strength indicator ──
 function updateStrength(val) {
-  const bar  = document.getElementById('strengthBar');
-  const hint = document.getElementById('strengthHint');
-  if (!bar) return;
-  let score = 0;
-  if (val.length >= 8)                               score++;
-  if (/[A-Za-z]/.test(val) && /[0-9]/.test(val))    score++;
-  if (/[^A-Za-z0-9]/.test(val))                     score++;
-  const levels = [
-    { w:'25%',  bg:'#EF4444', label:'Too weak' },
-    { w:'55%',  bg:'#F59E0B', label:'Fair' },
-    { w:'80%',  bg:'#3B82F6', label:'Good' },
-    { w:'100%', bg:'#16A34A', label:'Strong' },
-  ];
-  const lvl = val.length === 0 ? null : (levels[score] ?? levels[0]);
-  bar.style.width      = lvl ? lvl.w  : '0';
-  bar.style.background = lvl ? lvl.bg : '';
-  if (hint) { hint.textContent = lvl ? lvl.label : 'Min 8 characters with a letter and a number'; hint.style.color = lvl ? lvl.bg : ''; }
+  const bar=document.getElementById('strengthBar'),hint=document.getElementById('strengthHint');
+  if(!bar)return;
+  let s=0;
+  if(val.length>=8)s++;
+  if(/[A-Za-z]/.test(val)&&/[0-9]/.test(val))s++;
+  if(/[^A-Za-z0-9]/.test(val))s++;
+  const lvls=[{w:'25%',bg:'#EF4444',l:'Too weak'},{w:'55%',bg:'#F59E0B',l:'Fair'},{w:'80%',bg:'#3B82F6',l:'Good'},{w:'100%',bg:'#16A34A',l:'Strong'}];
+  const lvl=val.length===0?null:(lvls[s]??lvls[0]);
+  bar.style.width=lvl?lvl.w:'0';bar.style.background=lvl?lvl.bg:'';
+  if(hint){hint.textContent=lvl?lvl.l:'Min 8 characters with a letter and a number';hint.style.color=lvl?lvl.bg:'';}
 }
-
-// ── Per-field client-side validation ──
-const nameRx   = /^[A-Za-zÀ-ÖØ-öø-ÿ\s\-]+$/;
-const mobileRx = /^(\+?63|0)9\d{9}$/;
-
-function getErrEl(id) {
-  const input = document.getElementById(id);
-  if (!input) return null;
-  const container = input.closest('.f-wrap')?.parentElement ?? input.parentElement;
-  let err = container.querySelector('.field-err');
-  if (!err) {
-    err = document.createElement('div');
-    err.className = 'field-err';
-    err.innerHTML = '<i class="bi bi-exclamation-circle"></i><span></span>';
-    container.appendChild(err);
-  }
-  return err;
-}
-function showErr(id, msg) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.classList.add('is-invalid'); el.classList.remove('is-valid');
-  const err = getErrEl(id);
-  if (err) { const sp = err.querySelector('span'); if (sp) sp.textContent = msg; else err.childNodes[1].textContent = msg; err.style.display = 'flex'; }
-}
-function clearErr(id) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.classList.remove('is-invalid');
-  if (el.value.trim()) el.classList.add('is-valid');
-  const err = getErrEl(id);
-  if (err) err.style.display = 'none';
-}
-
-function validateField(id) {
-  const el  = document.getElementById(id);
-  if (!el) return true;
-  const val = el.value.trim();
-
-  if (id === 'f_first') {
-    if (!val)               { showErr(id, 'First name is required.');                        return false; }
-    if (!nameRx.test(val))  { showErr(id, 'Letters, spaces, and hyphens only.');             return false; }
-    if (val.length < 2)     { showErr(id, 'At least 2 characters required.');                return false; }
-  }
-  if (id === 'f_last') {
-    if (!val)               { showErr(id, 'Last name is required.');                         return false; }
-    if (!nameRx.test(val))  { showErr(id, 'Letters, spaces, and hyphens only.');             return false; }
-    if (val.length < 2)     { showErr(id, 'At least 2 characters required.');                return false; }
-  }
-  if (id === 'f_mid' && val) {
-    if (!nameRx.test(val))  { showErr(id, 'Letters, spaces, and hyphens only.');             return false; }
-  }
-  if (id === 'f_mobile') {
-    const clean = val.replace(/\s+/g, '');
-    if (!val)               { showErr(id, 'Mobile number is required.');                     return false; }
-    if (!mobileRx.test(clean)) { showErr(id, 'Enter a valid PH number (e.g. 09171234567).'); return false; }
-  }
-  if (id === 'f_email') {
-    if (!val)               { showErr(id, 'Email address is required.');                     return false; }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) { showErr(id, 'Enter a valid email address.'); return false; }
-  }
-  if (id === 'f_pass') {
-    if (!val)               { showErr(id, 'Password is required.');                          return false; }
-    if (val.length < 8)     { showErr(id, 'At least 8 characters required.');               return false; }
-    if (!/[A-Za-z]/.test(val) || !/[0-9]/.test(val)) { showErr(id, 'Must contain a letter and a number.'); return false; }
-  }
-  clearErr(id);
-  return true;
-}
-
-// Validate on blur
-['f_first','f_last','f_mid','f_mobile','f_email','f_pass'].forEach(id => {
-  const el = document.getElementById(id);
-  if (el) el.addEventListener('blur', () => validateField(id));
-});
-
-// Block submit if any field fails
-document.getElementById('regForm')?.addEventListener('submit', function(e) {
-  const allValid = ['f_first','f_last','f_mid','f_mobile','f_email','f_pass'].map(validateField).every(Boolean);
-  if (!allValid) e.preventDefault();
-});
 </script>
 </body>
 </html>
