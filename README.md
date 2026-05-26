@@ -11,5 +11,5 @@ Members:
 Techstack:
 - PHP
 - Bootstrap
-- Firebase Firestore
+- Firebase Firestore (Removed config file cuz api keys)
 - XAMPP (Localhost - enable Apache)
