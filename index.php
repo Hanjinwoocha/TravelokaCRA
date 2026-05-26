@@ -418,7 +418,7 @@ if (!empty($_SESSION['customer_logged_in'])) { header('Location: /Traveloka/Cust
       </div>
       <div class="col-sm-6 col-lg-3">
         <div class="car-card">
-          <img src="https://images.unsplash.com/photo-1617531653332-bd46c16f4d68?w=500&q=80" alt="Hatchback">
+          <img src="https://images.unsplash.com/photo-1610768207795-72169abdf0d4?q=80&w=1169&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D" alt="Hatchback">
           <div class="car-card-body">
             <span class="car-badge" style="background:#8B5CF6">Hatchback</span>
             <div class="car-name">Honda Jazz 2022</div>
